@@ -7,9 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		398815E14FDF9873296C2392 /* PlatformMacOSKit in Frameworks */ = {isa = PBXBuildFile; productRef = 22FF1A5302340D0E84B52358 /* PlatformMacOSKit */; };
 		4D1E00032FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = 4D1E00012FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		4D1E00042FF5000000E2BC47 /* Emyn/SharedFrameStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D1E00052FF5000000E2BC47 /* Emyn/SharedFrameStore.swift */; };
-		398815E14FDF9873296C2392 /* PlatformMacOSKit in Frameworks */ = {isa = PBXBuildFile; productRef = 22FF1A5302340D0E84B52358 /* PlatformMacOSKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -192,7 +192,7 @@
 			mainGroup = 4D3915A52FF4F92200E2BC47;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				8F550D1E0CC3C9A863ECC0BE /* XCLocalSwiftPackageReference "PlatformMacOSKit" */,
+				8F550D1E0CC3C9A863ECC0BE /* XCLocalSwiftPackageReference "platform-macos/swift/PlatformMacOSKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4D3915AF2FF4F92200E2BC47 /* Products */;
@@ -247,21 +247,6 @@
 			targetProxy = 4D1E000C2FF5000000E2BC47 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
-
-/* Begin XCLocalSwiftPackageReference section */
-		8F550D1E0CC3C9A863ECC0BE /* XCLocalSwiftPackageReference "PlatformMacOSKit" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = platform-macos/swift/PlatformMacOSKit;
-		};
-/* End XCLocalSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		22FF1A5302340D0E84B52358 /* PlatformMacOSKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 8F550D1E0CC3C9A863ECC0BE /* XCLocalSwiftPackageReference "PlatformMacOSKit" */;
-			productName = PlatformMacOSKit;
-		};
-/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		4D1E000D2FF5000000E2BC47 /* Debug */ = {
@@ -551,6 +536,21 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		8F550D1E0CC3C9A863ECC0BE /* XCLocalSwiftPackageReference "platform-macos/swift/PlatformMacOSKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "platform-macos/swift/PlatformMacOSKit";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		22FF1A5302340D0E84B52358 /* PlatformMacOSKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8F550D1E0CC3C9A863ECC0BE /* XCLocalSwiftPackageReference "platform-macos/swift/PlatformMacOSKit" */;
+			productName = PlatformMacOSKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4D3915A62FF4F92200E2BC47 /* Project object */;
 }

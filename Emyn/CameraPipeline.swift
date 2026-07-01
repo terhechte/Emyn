@@ -833,11 +833,17 @@ final class CameraPipeline: NSObject, ObservableObject {
             width: outputExtent.width / clampedZoom,
             height: outputExtent.height / clampedZoom
         )
-        let centerX = outputExtent.minX + outputExtent.width * max(0, min(1, center.x))
-        let centerY = outputExtent.minY + outputExtent.height * (1 - max(0, min(1, center.y)))
+        let anchorX = outputExtent.minX + outputExtent.width * max(0, min(1, center.x))
+        let anchorY = outputExtent.minY + outputExtent.height * (1 - max(0, min(1, center.y)))
         let origin = CGPoint(
-            x: max(outputExtent.minX, min(outputExtent.maxX - cropSize.width, centerX - cropSize.width * 0.5)),
-            y: max(outputExtent.minY, min(outputExtent.maxY - cropSize.height, centerY - cropSize.height * 0.5))
+            x: max(
+                outputExtent.minX,
+                min(outputExtent.maxX - cropSize.width, anchorX - (anchorX - outputExtent.minX) / clampedZoom)
+            ),
+            y: max(
+                outputExtent.minY,
+                min(outputExtent.maxY - cropSize.height, anchorY - (anchorY - outputExtent.minY) / clampedZoom)
+            )
         )
         let crop = CGRect(origin: origin, size: cropSize)
 
