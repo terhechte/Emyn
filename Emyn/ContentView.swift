@@ -274,6 +274,8 @@ struct ContentView: View {
                     Label("Function Keys", systemImage: "keyboard")
                 }
 
+                functionKeyActionButtons
+
                 Text(functionKeys.statusText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -369,6 +371,55 @@ struct ContentView: View {
         }
     }
 
+    private var functionKeyActionButtons: some View {
+        let columns = [
+            GridItem(.flexible(), spacing: 6),
+            GridItem(.flexible(), spacing: 6)
+        ]
+        let imageSlots = functionKeys.configuration.slots.filter {
+            $0.action == .toggleImageOverlay && $0.imagePath != nil
+        }
+
+        return LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+            ForEach(FunctionKeyAction.sidebarActions) { action in
+                Button {
+                    functionKeys.reportManualAction(action)
+                    performFunctionKeyAction(
+                        action,
+                        identifier: "sidebar.\(action.rawValue)",
+                        imagePath: nil
+                    )
+                } label: {
+                    Label(action.title, systemImage: action.systemImage)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(action.needsWindowBackground && pipeline.selectedWindowBackgroundTitle == nil)
+            }
+
+            ForEach(imageSlots) { slot in
+                Button {
+                    functionKeys.reportManualAction(slot.action, sourceTitle: slot.key.title)
+                    performFunctionKeyAction(
+                        slot.action,
+                        identifier: slot.key.storageIdentifier,
+                        imagePath: slot.imagePath
+                    )
+                } label: {
+                    Label(slot.key.title, systemImage: slot.action.systemImage)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+    }
+
     private func toggleWindowControl(for option: WindowBackgroundOption) {
         if windowControl.isActive {
             windowControl.deactivate()
@@ -388,19 +439,30 @@ struct ContentView: View {
     }
 
     private func handleFunctionKeyTrigger(_ trigger: FunctionKeyTrigger) {
-        switch trigger.slot.action {
+        performFunctionKeyAction(
+            trigger.slot.action,
+            identifier: trigger.key.storageIdentifier,
+            imagePath: trigger.slot.imagePath
+        )
+    }
+
+    private func performFunctionKeyAction(
+        _ action: FunctionKeyAction,
+        identifier: String,
+        imagePath: String?
+    ) {
+        switch action {
         case .none:
             break
         case .toggleWindowBackground:
             pipeline.toggleWindowBackgroundVisibility()
         case .togglePersonPosition:
             pipeline.togglePersonCompactPosition()
+        case .toggleWindowAndPerson:
+            pipeline.toggleWindowAndCompactPerson()
         case .toggleImageOverlay:
-            guard let imagePath = trigger.slot.imagePath else { return }
-            pipeline.toggleImageOverlay(
-                identifier: trigger.key.storageIdentifier,
-                imagePath: imagePath
-            )
+            guard let imagePath else { return }
+            pipeline.toggleImageOverlay(identifier: identifier, imagePath: imagePath)
         case .toggleWindowZoom:
             pipeline.toggleWindowZoom()
         }

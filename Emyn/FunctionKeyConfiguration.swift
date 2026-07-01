@@ -68,6 +68,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
     case none
     case toggleWindowBackground
     case togglePersonPosition
+    case toggleWindowAndPerson
     case toggleImageOverlay
     case toggleWindowZoom
 
@@ -78,6 +79,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         case .none: return "None"
         case .toggleWindowBackground: return "Window"
         case .togglePersonPosition: return "Person"
+        case .toggleWindowAndPerson: return "Window + Person"
         case .toggleImageOverlay: return "Image"
         case .toggleWindowZoom: return "Zoom"
         }
@@ -88,8 +90,27 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         case .none: return "minus.circle"
         case .toggleWindowBackground: return "rectangle.on.rectangle"
         case .togglePersonPosition: return "person.crop.rectangle"
+        case .toggleWindowAndPerson: return "rectangle.on.rectangle"
         case .toggleImageOverlay: return "photo"
         case .toggleWindowZoom: return "plus.magnifyingglass"
+        }
+    }
+
+    static var sidebarActions: [FunctionKeyAction] {
+        [
+            .toggleWindowBackground,
+            .togglePersonPosition,
+            .toggleWindowZoom,
+            .toggleWindowAndPerson
+        ]
+    }
+
+    var needsWindowBackground: Bool {
+        switch self {
+        case .toggleWindowBackground, .toggleWindowZoom, .toggleWindowAndPerson:
+            return true
+        case .none, .togglePersonPosition, .toggleImageOverlay:
+            return false
         }
     }
 }
@@ -225,6 +246,11 @@ final class FunctionKeyController: ObservableObject {
                 slot.action = .toggleImageOverlay
             }
         }
+    }
+
+    func reportManualAction(_ action: FunctionKeyAction, sourceTitle: String = "Button") {
+        guard action != .none else { return }
+        statusText = "\(sourceTitle): \(action.title)"
     }
 
     private func handle(event: NSEvent) -> Bool {

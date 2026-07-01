@@ -210,6 +210,22 @@ private struct PresentationEffects {
         )
     }
 
+    mutating func toggleWindowAndPersonPresentation(at time: CFTimeInterval) {
+        let isPresentingWindowWithCompactPerson = windowBackgroundOpacity.targetValue > 0.5
+            && personScale.targetValue < 0.75
+
+        windowBackgroundOpacity.animate(
+            to: isPresentingWindowWithCompactPerson ? 0 : 1,
+            duration: 1,
+            at: time
+        )
+        personScale.animate(
+            to: isPresentingWindowWithCompactPerson ? 1 : 0.5,
+            duration: 1,
+            at: time
+        )
+    }
+
     mutating func toggleWindowZoom(at time: CFTimeInterval) {
         windowZoom.animate(
             to: windowZoom.targetValue > 1.5 ? 1 : 2,
@@ -457,6 +473,13 @@ final class CameraPipeline: NSObject, ObservableObject {
         let now = CACurrentMediaTime()
         updateSettings { settings in
             settings.presentationEffects.togglePersonPosition(at: now)
+        }
+    }
+
+    func toggleWindowAndCompactPerson() {
+        let now = CACurrentMediaTime()
+        updateSettings { settings in
+            settings.presentationEffects.toggleWindowAndPersonPresentation(at: now)
         }
     }
 
