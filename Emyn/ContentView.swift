@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var isWindowBackgroundPickerPresented = false
     @State private var selectedWindowBackgroundOption: WindowBackgroundOption?
     @State private var previewNSView: SampleBufferPreviewView?
+    @AppStorage("excludeFunctionKeysDuringWindowControl") private var excludeFunctionKeysDuringWindowControl = true
 
     var body: some View {
         HStack(spacing: 0) {
@@ -32,6 +33,9 @@ struct ContentView: View {
             windowControl.deactivate()
             pipeline.stop()
             pipeline.clearWindowBackground()
+        }
+        .onChange(of: excludeFunctionKeysDuringWindowControl) { newValue in
+            windowControl.setExcludeFunctionKeys(newValue)
         }
         .sheet(isPresented: $isWindowBackgroundPickerPresented) {
             WindowBackgroundPickerView(
@@ -109,6 +113,24 @@ struct ContentView: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
+                        Text("Analysis")
+                        Spacer()
+                        Text(pipeline.analysisResolution.dimensionsTitle)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Picker("Analysis", selection: $pipeline.analysisResolution) {
+                        ForEach(SegmentationAnalysisResolution.allCases) { resolution in
+                            Text(resolution.title).tag(resolution)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .help("Resolution used for Vision person segmentation")
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
                         Text("Smoothing")
                         Spacer()
                         Text(pipeline.temporalSmoothing, format: .percent.precision(.fractionLength(0)))
@@ -125,75 +147,104 @@ struct ContentView: View {
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Background")
-                    HStack(spacing: 8) {
-                        ForEach(BackgroundPreset.allCases) { preset in
-                            Button {
-                                pipeline.backgroundPreset = preset
-                            } label: {
-                                ZStack {
-                                    Circle()
-                                        .fill(Color(nsColor: preset.nsColor))
-                                    if preset == .transparent {
-                                        Image(systemName: "circle.dotted")
-                                            .font(.system(size: 20, weight: .semibold))
-                                            .foregroundStyle(.secondary)
+
+                    Picker("Background Mode", selection: backgroundModeSelection) {
+                        ForEach(BackgroundMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+
+                    if pipeline.backgroundMode == .blur {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Blur Radius")
+                                Spacer()
+                                Text("\(pipeline.backgroundBlurRadius, specifier: "%.0f") px")
+                                    .foregroundStyle(.secondary)
+                            }
+                            Slider(value: $pipeline.backgroundBlurRadius, in: 4...40, step: 1)
+                        }
+                    } else {
+                        HStack(spacing: 8) {
+                            ForEach(BackgroundPreset.allCases) { preset in
+                                Button {
+                                    pipeline.backgroundPreset = preset
+                                } label: {
+                                    ZStack {
+                                        Circle()
+                                            .fill(Color(nsColor: preset.nsColor))
+                                        if preset == .transparent {
+                                            Image(systemName: "circle.dotted")
+                                                .font(.system(size: 20, weight: .semibold))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .frame(width: 28, height: 28)
+                                    .overlay {
+                                        Circle()
+                                            .stroke(
+                                                pipeline.backgroundPreset == preset ? Color.accentColor : Color.clear,
+                                                lineWidth: 3
+                                            )
                                     }
                                 }
-                                .frame(width: 28, height: 28)
-                                .overlay {
-                                    Circle()
-                                        .stroke(
-                                            pipeline.backgroundPreset == preset ? Color.accentColor : Color.clear,
-                                            lineWidth: 3
-                                        )
-                                }
+                                .buttonStyle(.plain)
+                                .help(preset.title)
                             }
-                            .buttonStyle(.plain)
-                            .help(preset.title)
                         }
-                    }
 
-                    HStack(spacing: 8) {
-                        Button {
-                            windowBackgroundPicker.refresh()
-                            isWindowBackgroundPickerPresented = true
-                        } label: {
-                            Label("Choose Window", systemImage: "rectangle.on.rectangle")
-                        }
-                        .controlSize(.small)
-
-                        if pipeline.selectedWindowBackgroundTitle != nil {
+                        HStack(spacing: 8) {
                             Button {
-                                clearSelectedWindowBackground()
+                                windowBackgroundPicker.refresh()
+                                isWindowBackgroundPickerPresented = true
                             } label: {
-                                Image(systemName: "xmark.circle.fill")
+                                Label("Choose Window", systemImage: "rectangle.on.rectangle")
                             }
                             .controlSize(.small)
-                            .help("Clear window background")
+
+                            if pipeline.selectedWindowBackgroundTitle != nil {
+                                Button {
+                                    clearSelectedWindowBackground()
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                }
+                                .controlSize(.small)
+                                .help("Clear window background")
+                            }
                         }
-                    }
 
-                    Text(pipeline.selectedWindowBackgroundTitle ?? pipeline.windowBackgroundStatusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-
-                    if pipeline.selectedWindowBackgroundTitle != nil, let selectedWindowBackgroundOption {
-                        Button {
-                            toggleWindowControl(for: selectedWindowBackgroundOption)
-                        } label: {
-                            Label(
-                                windowControl.isActive ? "Stop Control" : "Control Window",
-                                systemImage: windowControl.isActive ? "xmark.circle" : "cursorarrow"
-                            )
-                        }
-                        .controlSize(.small)
-                        .disabled(previewNSView == nil)
-
-                        Text(windowControl.statusText)
+                        Text(pipeline.selectedWindowBackgroundTitle ?? pipeline.windowBackgroundStatusText)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
+
+                        if pipeline.selectedWindowBackgroundTitle != nil, let selectedWindowBackgroundOption {
+                            Toggle(
+                                "Exclude Function Keys",
+                                isOn: $excludeFunctionKeysDuringWindowControl
+                            )
+                            .toggleStyle(.checkbox)
+                            .controlSize(.small)
+                            .help("Keep F1-F12 available outside the controlled window")
+
+                            Button {
+                                toggleWindowControl(for: selectedWindowBackgroundOption)
+                            } label: {
+                                Label(
+                                    windowControl.isActive ? "Stop Control" : "Control Window",
+                                    systemImage: windowControl.isActive ? "xmark.circle" : "cursorarrow"
+                                )
+                            }
+                            .controlSize(.small)
+                            .disabled(previewNSView == nil)
+
+                            Text(windowControl.statusText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
                     }
                 }
             }
@@ -279,11 +330,26 @@ struct ContentView: View {
         }
     }
 
+    private var backgroundModeSelection: Binding<BackgroundMode> {
+        Binding {
+            pipeline.backgroundMode
+        } set: { newValue in
+            if newValue == .blur {
+                clearSelectedWindowBackground()
+            }
+            pipeline.backgroundMode = newValue
+        }
+    }
+
     private func toggleWindowControl(for option: WindowBackgroundOption) {
         if windowControl.isActive {
             windowControl.deactivate()
         } else {
-            windowControl.activate(option: option, mappedTo: previewNSView)
+            windowControl.activate(
+                option: option,
+                mappedTo: previewNSView,
+                excludeFunctionKeys: excludeFunctionKeysDuringWindowControl
+            )
         }
     }
 

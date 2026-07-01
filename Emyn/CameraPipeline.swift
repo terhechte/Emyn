@@ -19,6 +19,7 @@ struct CameraDeviceInfo: Identifiable, Equatable {
 enum SegmentationQuality: String, CaseIterable, Identifiable {
     case fast
     case balanced
+    case accurate
 
     var id: String { rawValue }
 
@@ -26,6 +27,7 @@ enum SegmentationQuality: String, CaseIterable, Identifiable {
         switch self {
         case .fast: return "Fast"
         case .balanced: return "Balanced"
+        case .accurate: return "Accurate"
         }
     }
 
@@ -33,6 +35,53 @@ enum SegmentationQuality: String, CaseIterable, Identifiable {
         switch self {
         case .fast: return .fast
         case .balanced: return .balanced
+        case .accurate: return .accurate
+        }
+    }
+}
+
+enum SegmentationAnalysisResolution: String, CaseIterable, Identifiable {
+    case low
+    case half
+    case full
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .low: return "Low"
+        case .half: return "Half"
+        case .full: return "Full"
+        }
+    }
+
+    var dimensionsTitle: String {
+        let dimensions = pixelDimensions
+        return "\(dimensions.width)x\(dimensions.height)"
+    }
+
+    var pixelDimensions: (width: Int, height: Int) {
+        switch self {
+        case .low:
+            return (384, 216)
+        case .half:
+            return (SharedFrameConfiguration.width / 2, SharedFrameConfiguration.height / 2)
+        case .full:
+            return (SharedFrameConfiguration.width, SharedFrameConfiguration.height)
+        }
+    }
+}
+
+enum BackgroundMode: String, CaseIterable, Identifiable {
+    case replacement
+    case blur
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .replacement: return "Replace"
+        case .blur: return "Blur"
         }
     }
 }
@@ -84,8 +133,11 @@ enum BackgroundPreset: String, CaseIterable, Identifiable {
 
 private struct ProcessingSettings {
     var quality: SegmentationQuality = .balanced
+    var analysisResolution: SegmentationAnalysisResolution = .half
     var temporalSmoothing: Double = 0.72
     var maskReuseFrameCount: Int = 2
+    var backgroundMode: BackgroundMode = .replacement
+    var backgroundBlurRadius: Double = 18
     var background: BackgroundPreset = .black
 }
 
@@ -107,12 +159,27 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
+    @Published var analysisResolution: SegmentationAnalysisResolution = .half {
+        didSet {
+            updateSettings { $0.analysisResolution = self.analysisResolution }
+            clearMask()
+        }
+    }
+
     @Published var temporalSmoothing: Double = 0.72 {
         didSet { updateSettings { $0.temporalSmoothing = self.temporalSmoothing } }
     }
 
     @Published var maskReuseFrameCount: Int = 2 {
         didSet { updateSettings { $0.maskReuseFrameCount = self.maskReuseFrameCount } }
+    }
+
+    @Published var backgroundMode: BackgroundMode = .replacement {
+        didSet { updateSettings { $0.backgroundMode = self.backgroundMode } }
+    }
+
+    @Published var backgroundBlurRadius: Double = 18 {
+        didSet { updateSettings { $0.backgroundBlurRadius = self.backgroundBlurRadius } }
     }
 
     @Published var backgroundPreset: BackgroundPreset = .black {
@@ -149,6 +216,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     private var latestMask: CIImage?
     private var outputPixelBufferPool: CVPixelBufferPool?
     private var analysisPixelBufferPool: CVPixelBufferPool?
+    private var analysisPixelBufferPoolSize = CGSize(width: 0, height: 0)
     private var outputFormatDescription: CMFormatDescription?
     private var frameCounter: UInt64 = 0
     private var segmentationInFlight = false
@@ -179,7 +247,13 @@ final class CameraPipeline: NSObject, ObservableObject {
             height: SharedFrameConfiguration.height,
             pixelFormat: SharedFrameConfiguration.pixelFormat
         )
-        analysisPixelBufferPool = Self.makePixelBufferPool(width: 384, height: 216, pixelFormat: kCVPixelFormatType_32BGRA)
+        let analysisDimensions = analysisResolution.pixelDimensions
+        analysisPixelBufferPool = Self.makePixelBufferPool(
+            width: analysisDimensions.width,
+            height: analysisDimensions.height,
+            pixelFormat: kCVPixelFormatType_32BGRA
+        )
+        analysisPixelBufferPoolSize = CGSize(width: analysisDimensions.width, height: analysisDimensions.height)
 
         CMVideoFormatDescriptionCreate(
             allocator: kCFAllocatorDefault,
@@ -342,11 +416,14 @@ final class CameraPipeline: NSObject, ObservableObject {
     }
 
     private func performSegmentation(on pixelBuffer: CVPixelBuffer) {
-        guard let analysisPixelBuffer = makeAnalysisPixelBuffer() else {
+        let settings = currentSettings()
+        let analysisDimensions = settings.analysisResolution.pixelDimensions
+        let analysisSize = CGSize(width: analysisDimensions.width, height: analysisDimensions.height)
+
+        guard let analysisPixelBuffer = makeAnalysisPixelBuffer(size: analysisSize) else {
             return
         }
 
-        let analysisSize = CGSize(width: 384, height: 216)
         let analysisImage = aspectFillImage(from: pixelBuffer, targetSize: analysisSize)
         ciContext.render(
             analysisImage,
@@ -365,7 +442,6 @@ final class CameraPipeline: NSObject, ObservableObject {
             var newMask = CIImage(cvPixelBuffer: maskPixelBuffer)
             newMask = normalizeExtent(newMask)
 
-            let settings = currentSettings()
             if let previousMask = currentMask(), previousMask.extent.size == newMask.extent.size {
                 let newWeight = max(0.08, min(1.0, 1.0 - settings.temporalSmoothing))
                 newMask = newMask.applyingFilter("CIMix", parameters: [
@@ -413,7 +489,11 @@ final class CameraPipeline: NSObject, ObservableObject {
         let renderedImage: CIImage
         if let mask = currentMask() {
             let upscaledMask = upscale(mask: mask, to: outputExtent)
-            let background = backgroundImage(settings: settings, outputExtent: outputExtent)
+            let background = backgroundImage(
+                settings: settings,
+                foreground: foreground,
+                outputExtent: outputExtent
+            )
 
             renderedImage = foreground.applyingFilter("CIBlendWithMask", parameters: [
                 kCIInputBackgroundImageKey: background,
@@ -457,7 +537,15 @@ final class CameraPipeline: NSObject, ObservableObject {
             .transformed(by: CGAffineTransform(translationX: -crop.origin.x, y: -crop.origin.y))
     }
 
-    private func backgroundImage(settings: ProcessingSettings, outputExtent: CGRect) -> CIImage {
+    private func backgroundImage(settings: ProcessingSettings, foreground: CIImage, outputExtent: CGRect) -> CIImage {
+        if settings.backgroundMode == .blur {
+            let radius = max(0, settings.backgroundBlurRadius)
+            return foreground
+                .clampedToExtent()
+                .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
+                .cropped(to: outputExtent)
+        }
+
         if let pixelBuffer = currentWindowBackgroundPixelBuffer() {
             return aspectFillImage(from: pixelBuffer, targetSize: outputExtent.size)
                 .cropped(to: outputExtent)
@@ -480,7 +568,7 @@ final class CameraPipeline: NSObject, ObservableObject {
 
         return normalizedMask
             .transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
-            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 1.25])
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 0.9])
             .cropped(to: extent)
     }
 
@@ -498,7 +586,16 @@ final class CameraPipeline: NSObject, ObservableObject {
         return pixelBuffer
     }
 
-    private func makeAnalysisPixelBuffer() -> CVPixelBuffer? {
+    private func makeAnalysisPixelBuffer(size: CGSize) -> CVPixelBuffer? {
+        if analysisPixelBufferPool == nil || analysisPixelBufferPoolSize != size {
+            analysisPixelBufferPool = Self.makePixelBufferPool(
+                width: Int(size.width),
+                height: Int(size.height),
+                pixelFormat: kCVPixelFormatType_32BGRA
+            )
+            analysisPixelBufferPoolSize = size
+        }
+
         guard let analysisPixelBufferPool else { return nil }
         var pixelBuffer: CVPixelBuffer?
         CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, analysisPixelBufferPool, &pixelBuffer)

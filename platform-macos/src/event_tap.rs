@@ -8,7 +8,10 @@
 //! - Detects a triple-Option-key tap within a configurable window as an escape sequence
 
 use std::ffi::c_void;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // ── FFI ───────────────────────────────────────────────────────────────────────
@@ -106,6 +109,9 @@ const FIELD_MOUSE_BUTTON: u32 = 3;
 const VK_OPTION: i64 = 58;
 const VK_RIGHT_OPTION: i64 = 61;
 
+// macOS virtual key codes for F1-F12.
+const VK_FUNCTION_KEYS: [i64; 12] = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111];
+
 // CGEventFlags bit for Option/Alternate
 const FLAG_ALTERNATE: u64 = 0x00080000;
 
@@ -144,6 +150,7 @@ pub struct TapState {
     pub target_h: f64,
     pub escape_taps: u32,
     pub escape_interval_ms: u64,
+    pub exclude_function_keys: Arc<AtomicBool>,
     pub on_mouse_move: Arc<dyn Fn(f64, f64) + Send + Sync>,
     pub on_deactivate: Arc<dyn Fn() + Send + Sync>,
     // Mutable escape-detection state; only touched from the tap callback (main run-loop thread).
@@ -187,9 +194,10 @@ unsafe extern "C" fn tap_callback(
 
     // ── Keyboard / modifier events ────────────────────────────────────────────
     if event_type == EV_KEY_DOWN || event_type == EV_KEY_UP || event_type == EV_FLAGS_CHANGED {
+        let keycode = CGEventGetIntegerValueField(event, FIELD_KEYCODE);
+
         // Escape-sequence detection on flagsChanged (Option key down transitions).
         if event_type == EV_FLAGS_CHANGED {
-            let keycode = CGEventGetIntegerValueField(event, FIELD_KEYCODE);
             if keycode == VK_OPTION || keycode == VK_RIGHT_OPTION {
                 // CGEventGetFlags returns the modifier-flag bitmask.
                 // Option-key DOWN = the Alternate bit is now SET in the flags.
@@ -226,6 +234,13 @@ unsafe extern "C" fn tap_callback(
                     }
                 }
             }
+        }
+
+        if (event_type == EV_KEY_DOWN || event_type == EV_KEY_UP)
+            && state.exclude_function_keys.load(Ordering::Relaxed)
+            && is_function_key(keycode)
+        {
+            return event;
         }
 
         // Forward the keyboard event to the target via SkyLight (with auth message).
@@ -289,6 +304,10 @@ unsafe extern "C" fn tap_callback(
     }
 
     std::ptr::null_mut() // suppress original
+}
+
+fn is_function_key(keycode: i64) -> bool {
+    VK_FUNCTION_KEYS.contains(&keycode)
 }
 
 fn is_mouse_down(event_type: u32) -> bool {
@@ -447,6 +466,7 @@ impl EventTapSession {
         target_h: f64,
         escape_taps: u32,
         escape_interval_ms: u64,
+        exclude_function_keys: Arc<AtomicBool>,
         on_mouse_move: Arc<dyn Fn(f64, f64) + Send + Sync>,
         on_deactivate: Arc<dyn Fn() + Send + Sync>,
     ) -> anyhow::Result<Self> {
@@ -463,6 +483,7 @@ impl EventTapSession {
             target_h,
             escape_taps,
             escape_interval_ms,
+            exclude_function_keys,
             on_mouse_move,
             on_deactivate,
             alt_press_times: Mutex::new(Vec::new()),

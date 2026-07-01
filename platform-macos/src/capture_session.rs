@@ -25,7 +25,10 @@
 
 use crate::event_tap::EventTapSession;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 // ── Data types exposed to Swift ───────────────────────────────────────────────
 
@@ -68,6 +71,7 @@ pub struct CaptureSession {
     target_pid: i32,
     tap: Mutex<Option<EventTapSession>>,
     queue: EventQueue,
+    exclude_function_keys: Arc<AtomicBool>,
 }
 
 impl CaptureSession {
@@ -138,6 +142,7 @@ impl CaptureSession {
             target_h,
             escape_taps,
             escape_interval_ms,
+            Arc::clone(&self.exclude_function_keys),
             on_mouse_move,
             on_deactivate,
         )
@@ -158,6 +163,7 @@ impl CaptureSession {
             target_pid,
             tap: Mutex::new(None),
             queue: Arc::new(Mutex::new(VecDeque::new())),
+            exclude_function_keys: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -266,6 +272,17 @@ impl CaptureSession {
             .ok()
             .map(|mut q| q.drain(..).collect())
             .unwrap_or_default()
+    }
+
+    /// When enabled, F1-F12 are not forwarded to the controlled app/window and
+    /// continue through the original event stream.
+    pub fn set_exclude_function_keys(&self, exclude: bool) {
+        self.exclude_function_keys.store(exclude, Ordering::Relaxed);
+    }
+
+    /// Returns whether F1-F12 are currently excluded from forwarding.
+    pub fn exclude_function_keys(&self) -> bool {
+        self.exclude_function_keys.load(Ordering::Relaxed)
     }
 
     /// Target PID this session controls.

@@ -17,12 +17,21 @@ public final class WindowCaptureSession {
     public var onMouseMove: ((CGPoint) -> Void)?
     public var onDeactivate: (() -> Void)?
 
-    public init(targetPid: pid_t, targetWindowID: CGWindowID? = nil) {
+    public init(
+        targetPid: pid_t,
+        targetWindowID: CGWindowID? = nil,
+        excludeFunctionKeys: Bool = true
+    ) {
         session = CaptureSession(targetPid: Int32(targetPid))
         self.targetWindowID = targetWindowID
+        session.setExcludeFunctionKeys(exclude: excludeFunctionKeys)
     }
 
     public var isActive: Bool { session.isActive() }
+    public var excludeFunctionKeys: Bool {
+        get { session.excludeFunctionKeys() }
+        set { session.setExcludeFunctionKeys(exclude: newValue) }
+    }
 
     /// Both bounds must be in CG screen space (top-left origin, y increasing
     /// downward), matching `CGEventGetLocation`/the AX API.

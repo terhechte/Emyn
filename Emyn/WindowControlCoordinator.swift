@@ -17,7 +17,7 @@ final class WindowControlCoordinator: ObservableObject {
         height: SharedFrameConfiguration.height
     )
 
-    func activate(option: WindowBackgroundOption, mappedTo view: NSView?) {
+    func activate(option: WindowBackgroundOption, mappedTo view: NSView?, excludeFunctionKeys: Bool) {
         guard !isActive else { return }
         guard let view else {
             statusText = "Preview unavailable"
@@ -49,7 +49,11 @@ final class WindowControlCoordinator: ObservableObject {
 
         view.window?.orderFrontRegardless()
 
-        let captureSession = WindowCaptureSession(targetPid: pid, targetWindowID: option.id)
+        let captureSession = WindowCaptureSession(
+            targetPid: pid,
+            targetWindowID: option.id,
+            excludeFunctionKeys: excludeFunctionKeys
+        )
         captureSession.onMouseMove = { [weak self] normalised in
             self?.cursorNormalised = normalised
         }
@@ -80,6 +84,10 @@ final class WindowControlCoordinator: ObservableObject {
 
         session.deactivate()
         finishDeactivation(status: "Window control inactive")
+    }
+
+    func setExcludeFunctionKeys(_ exclude: Bool) {
+        session?.excludeFunctionKeys = exclude
     }
 
     private func finishDeactivation(status: String) {
