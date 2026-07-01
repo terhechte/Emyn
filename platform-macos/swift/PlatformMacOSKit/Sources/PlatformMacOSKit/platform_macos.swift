@@ -545,6 +545,12 @@ public protocol CaptureSessionProtocol : AnyObject {
     func activateWithRects(viewRect: Rect, targetRect: Rect) throws 
     
     /**
+     * Activate with a selected CGWindowID so forwarded mouse events carry
+     * window-local hit-test coordinates and background-window routing fields.
+     */
+    func activateWithWindowId(viewRect: Rect, targetRect: Rect, targetWindowId: UInt32) throws 
+    
+    /**
      * Stop capturing and restore the system cursor. Idempotent.
      */
     func deactivate() 
@@ -664,6 +670,19 @@ open func activateWithRects(viewRect: Rect, targetRect: Rect)throws  {try rustCa
     uniffi_platform_macos_fn_method_capturesession_activate_with_rects(self.uniffiClonePointer(),
         FfiConverterTypeRect.lower(viewRect),
         FfiConverterTypeRect.lower(targetRect),$0
+    )
+}
+}
+    
+    /**
+     * Activate with a selected CGWindowID so forwarded mouse events carry
+     * window-local hit-test coordinates and background-window routing fields.
+     */
+open func activateWithWindowId(viewRect: Rect, targetRect: Rect, targetWindowId: UInt32)throws  {try rustCallWithError(FfiConverterTypeCaptureError.lift) {
+    uniffi_platform_macos_fn_method_capturesession_activate_with_window_id(self.uniffiClonePointer(),
+        FfiConverterTypeRect.lower(viewRect),
+        FfiConverterTypeRect.lower(targetRect),
+        FfiConverterUInt32.lower(targetWindowId),$0
     )
 }
 }
@@ -1111,6 +1130,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_platform_macos_checksum_method_capturesession_activate_with_rects() != 47034) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_platform_macos_checksum_method_capturesession_activate_with_window_id() != 54436) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_platform_macos_checksum_method_capturesession_deactivate() != 62063) {

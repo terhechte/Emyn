@@ -1,0 +1,31 @@
+{
+  "object" : {
+    "artifacts" : [
+      {
+        "kind" : {
+          "xcframework" : {
+
+          }
+        },
+        "packageRef" : {
+          "identity" : "platformmacoskit",
+          "kind" : "root",
+          "location" : "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit",
+          "name" : "PlatformMacOSKit"
+        },
+        "path" : "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/platform_macosFFI.xcframework",
+        "source" : {
+          "type" : "local"
+        },
+        "targetName" : "platform_macosFFI"
+      }
+    ],
+    "dependencies" : [
+
+    ],
+    "prebuilts" : [
+
+    ]
+  },
+  "version" : 7
+}

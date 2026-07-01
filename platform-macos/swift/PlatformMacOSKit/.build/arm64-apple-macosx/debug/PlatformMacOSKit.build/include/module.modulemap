@@ -1,0 +1,3 @@
+module PlatformMacOSKit {
+    header "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/include/PlatformMacOSKit-Swift.h"
+}

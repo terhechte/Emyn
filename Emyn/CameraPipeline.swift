@@ -595,7 +595,7 @@ final class CameraPipeline: NSObject, ObservableObject {
             self.clearLatestWindowBackgroundPixelBuffer()
 
             let filter = SCContentFilter(desktopIndependentWindow: window)
-            let configuration = Self.makeWindowBackgroundStreamConfiguration()
+            let configuration = Self.makeWindowBackgroundStreamConfiguration(for: window.frame)
             let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
 
             do {
@@ -637,10 +637,11 @@ final class CameraPipeline: NSObject, ObservableObject {
         stream.stopCapture { _ in }
     }
 
-    private static func makeWindowBackgroundStreamConfiguration() -> SCStreamConfiguration {
+    private static func makeWindowBackgroundStreamConfiguration(for frame: CGRect) -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
-        configuration.width = SharedFrameConfiguration.width
-        configuration.height = SharedFrameConfiguration.height
+        let captureSize = windowBackgroundCaptureSize(for: frame)
+        configuration.width = captureSize.width
+        configuration.height = captureSize.height
         configuration.pixelFormat = SharedFrameConfiguration.pixelFormat
         configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
         configuration.queueDepth = 3
@@ -651,6 +652,26 @@ final class CameraPipeline: NSObject, ObservableObject {
         configuration.shouldBeOpaque = true
         configuration.backgroundColor = screenCaptureBackgroundColor
         return configuration
+    }
+
+    private static func windowBackgroundCaptureSize(for frame: CGRect) -> (width: Int, height: Int) {
+        let scale = backingScaleFactor(for: frame)
+        let rawWidth = max(1, frame.width * scale)
+        let rawHeight = max(1, frame.height * scale)
+        let maxDimension: CGFloat = 2560
+        let downscale = min(1, maxDimension / max(rawWidth, rawHeight))
+
+        return (
+            width: max(1, Int((rawWidth * downscale).rounded())),
+            height: max(1, Int((rawHeight * downscale).rounded()))
+        )
+    }
+
+    private static func backingScaleFactor(for frame: CGRect) -> CGFloat {
+        let center = CGPoint(x: frame.midX, y: frame.midY)
+        return NSScreen.screens.first { $0.frame.contains(center) }?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
     }
 
     private func beginSegmentationIfPossible() -> Bool {

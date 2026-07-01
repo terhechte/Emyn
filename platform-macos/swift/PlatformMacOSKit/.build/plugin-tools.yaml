@@ -1,0 +1,56 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "PackageStructure": ["<PackageStructure>"]
+  "PlatformMacOSKit-arm64-apple-macosx26.0-debug.module": ["<PlatformMacOSKit-arm64-apple-macosx26.0-debug.module>"]
+  "main": ["<PlatformMacOSKit-arm64-apple-macosx26.0-debug.module>"]
+  "test": ["<PlatformMacOSKit-arm64-apple-macosx26.0-debug.module>"]
+default: "main"
+nodes:
+  "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/Sources/PlatformMacOSKit/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/platform_macosFFI.xcframework/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+commands:
+  "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/Sources/PlatformMacOSKit/WindowCaptureSession.swift","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/Sources/PlatformMacOSKit/platform_macos.swift"]
+    outputs: ["/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/sources"]
+    description: "Write auxiliary file /Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/sources"
+
+  "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/libplatform_macos.a":
+    tool: copy-tool
+    inputs: ["/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/platform_macosFFI.xcframework/macos-arm64/libplatform_macos.a"]
+    outputs: ["/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/libplatform_macos.a"]
+    description: "Copying /Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/platform_macosFFI.xcframework/macos-arm64/libplatform_macos.a"
+
+  "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"]
+    outputs: ["/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+
+  "<PlatformMacOSKit-arm64-apple-macosx26.0-debug.module>":
+    tool: phony
+    inputs: ["/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/WindowCaptureSession.swift.o","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/platform_macos.swift.o","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/Modules/PlatformMacOSKit.swiftmodule"]
+    outputs: ["<PlatformMacOSKit-arm64-apple-macosx26.0-debug.module>"]
+
+  "C.PlatformMacOSKit-arm64-apple-macosx26.0-debug.module":
+    tool: shell
+    inputs: ["/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/Sources/PlatformMacOSKit/WindowCaptureSession.swift","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/Sources/PlatformMacOSKit/platform_macos.swift","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/libplatform_macos.a","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/sources"]
+    outputs: ["/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/WindowCaptureSession.swift.o","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/platform_macos.swift.o","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/Modules/PlatformMacOSKit.swiftmodule"]
+    description: "Compiling Swift Module 'PlatformMacOSKit' (2 sources)"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-module-name","PlatformMacOSKit","-emit-dependencies","-emit-module","-emit-module-path","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/Modules/PlatformMacOSKit.swiftmodule","-output-file-map","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/output-file-map.json","-parse-as-library","-incremental","-c","@/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/sources","-I","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx13.0","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j16","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-I","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/platform_macosFFI.xcframework/macos-arm64/Headers","-Xcc","-I","-Xcc","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/platform_macosFFI.xcframework/macos-arm64/Headers","-module-cache-path","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-parse-as-library","-F","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug","-emit-objc-header","-emit-objc-header-path","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/include/PlatformMacOSKit-Swift.h","-swift-version","5","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g","-Xcc","-isysroot","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk","-Xcc","-F","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-Xcc","-F","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks","-Xcc","-fPIC","-Xcc","-g","-package-name","platformmacoskit"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/Sources/PlatformMacOSKit/","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/platform_macosFFI.xcframework/","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/Package.swift","/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+

@@ -9,7 +9,7 @@
 
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // ── FFI ───────────────────────────────────────────────────────────────────────
 
@@ -98,6 +98,9 @@ const EV_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFFFFFF;
 
 // CGEventField: kCGKeyboardEventKeycode
 const FIELD_KEYCODE: u32 = 9;
+// CGEventField: kCGMouseEventClickState / kCGMouseEventButtonNumber
+const FIELD_MOUSE_CLICK_STATE: u32 = 1;
+const FIELD_MOUSE_BUTTON: u32 = 3;
 
 // macOS virtual key codes for Option keys
 const VK_OPTION: i64 = 58;
@@ -108,11 +111,20 @@ const FLAG_ALTERNATE: u64 = 0x00080000;
 
 fn event_mask() -> u64 {
     let types = [
-        EV_LEFT_MOUSE_DOWN, EV_LEFT_MOUSE_UP, EV_MOUSE_MOVED,
-        EV_LEFT_MOUSE_DRAGGED, EV_RIGHT_MOUSE_DOWN, EV_RIGHT_MOUSE_UP,
-        EV_RIGHT_MOUSE_DRAGGED, EV_OTHER_MOUSE_DOWN, EV_OTHER_MOUSE_UP,
-        EV_OTHER_MOUSE_DRAGGED, EV_SCROLL_WHEEL,
-        EV_KEY_DOWN, EV_KEY_UP, EV_FLAGS_CHANGED,
+        EV_LEFT_MOUSE_DOWN,
+        EV_LEFT_MOUSE_UP,
+        EV_MOUSE_MOVED,
+        EV_LEFT_MOUSE_DRAGGED,
+        EV_RIGHT_MOUSE_DOWN,
+        EV_RIGHT_MOUSE_UP,
+        EV_RIGHT_MOUSE_DRAGGED,
+        EV_OTHER_MOUSE_DOWN,
+        EV_OTHER_MOUSE_UP,
+        EV_OTHER_MOUSE_DRAGGED,
+        EV_SCROLL_WHEEL,
+        EV_KEY_DOWN,
+        EV_KEY_UP,
+        EV_FLAGS_CHANGED,
     ];
     types.iter().fold(0u64, |acc, &t| acc | (1u64 << t))
 }
@@ -121,6 +133,7 @@ fn event_mask() -> u64 {
 
 pub struct TapState {
     pub target_pid: i32,
+    pub target_window_id: Option<u32>,
     pub view_x: f64,
     pub view_y: f64,
     pub view_w: f64,
@@ -135,6 +148,8 @@ pub struct TapState {
     pub on_deactivate: Arc<dyn Fn() + Send + Sync>,
     // Mutable escape-detection state; only touched from the tap callback (main run-loop thread).
     pub alt_press_times: Mutex<Vec<Instant>>,
+    // Shared click-group id for down/drag/up sequences routed to a background window.
+    pub current_click_group: Mutex<Option<i64>>,
     // Pointer back to the port so the callback can re-enable it on timeout.
     pub tap_port: Mutex<*mut c_void>,
 }
@@ -183,7 +198,10 @@ unsafe extern "C" fn tap_callback(
                 if is_down {
                     let now = Instant::now();
                     let interval = std::time::Duration::from_millis(state.escape_interval_ms);
-                    let mut times = state.alt_press_times.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut times = state
+                        .alt_press_times
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     times.push(now);
                     times.retain(|t| now.duration_since(*t) <= interval);
                     if times.len() as u32 >= state.escape_taps {
@@ -191,9 +209,13 @@ unsafe extern "C" fn tap_callback(
                         // Forward the event first, then schedule deactivation.
                         let copy = CGEventCreateCopy(event);
                         if !copy.is_null() {
-                            crate::input::skylight::post_to_pid(
-                                state.target_pid as libc::pid_t, copy, true,
-                            );
+                            if !crate::input::skylight::post_to_pid(
+                                state.target_pid as libc::pid_t,
+                                copy,
+                                true,
+                            ) {
+                                CGEventPostToPid(state.target_pid, copy);
+                            }
                             CFRelease(copy);
                         }
                         // Trigger deactivation on next run-loop tick.
@@ -209,9 +231,9 @@ unsafe extern "C" fn tap_callback(
         // Forward the keyboard event to the target via SkyLight (with auth message).
         let copy = CGEventCreateCopy(event);
         if !copy.is_null() {
-            crate::input::skylight::post_to_pid(
-                state.target_pid as libc::pid_t, copy, true,
-            );
+            if !crate::input::skylight::post_to_pid(state.target_pid as libc::pid_t, copy, true) {
+                CGEventPostToPid(state.target_pid, copy);
+            }
             CFRelease(copy);
         }
         return std::ptr::null_mut(); // suppress original
@@ -231,28 +253,165 @@ unsafe extern "C" fn tap_callback(
     }
 
     // Normalised position (0–1) within the view.
-    let norm_x = if state.view_w > 0.0 { (cx - state.view_x) / state.view_w } else { 0.5 };
-    let norm_y = if state.view_h > 0.0 { (cy - state.view_y) / state.view_h } else { 0.5 };
+    let norm_x = if state.view_w > 0.0 {
+        (cx - state.view_x) / state.view_w
+    } else {
+        0.5
+    };
+    let norm_y = if state.view_h > 0.0 {
+        (cy - state.view_y) / state.view_h
+    } else {
+        0.5
+    };
 
     // Fire the software-cursor callback for move/drag events.
-    if matches!(event_type, EV_MOUSE_MOVED | EV_LEFT_MOUSE_DRAGGED | EV_RIGHT_MOUSE_DRAGGED | EV_OTHER_MOUSE_DRAGGED) {
+    if matches!(
+        event_type,
+        EV_MOUSE_MOVED | EV_LEFT_MOUSE_DRAGGED | EV_RIGHT_MOUSE_DRAGGED | EV_OTHER_MOUSE_DRAGGED
+    ) {
         (state.on_mouse_move)(norm_x, norm_y);
     }
 
     // Map to target app coordinates.
     let target_x = state.target_x + norm_x * state.target_w;
     let target_y = state.target_y + norm_y * state.target_h;
+    let target_local_x = (target_x - state.target_x).clamp(0.0, state.target_w);
+    let target_local_y = (target_y - state.target_y).clamp(0.0, state.target_h);
 
-    // Post a remapped copy via both SkyLight and public API (belt+suspenders, mouse path).
+    // Post a remapped, window-stamped copy via both SkyLight and public API.
     let copy = CGEventCreateCopy(event);
     if !copy.is_null() {
         CGEventSetLocation(copy, target_x, target_y);
+        stamp_mouse_routing_fields(state, event_type, copy, target_local_x, target_local_y);
         crate::input::skylight::post_to_pid(state.target_pid as libc::pid_t, copy, false);
         CGEventPostToPid(state.target_pid, copy);
         CFRelease(copy);
     }
 
     std::ptr::null_mut() // suppress original
+}
+
+fn is_mouse_down(event_type: u32) -> bool {
+    matches!(
+        event_type,
+        EV_LEFT_MOUSE_DOWN | EV_RIGHT_MOUSE_DOWN | EV_OTHER_MOUSE_DOWN
+    )
+}
+
+fn is_mouse_up(event_type: u32) -> bool {
+    matches!(
+        event_type,
+        EV_LEFT_MOUSE_UP | EV_RIGHT_MOUSE_UP | EV_OTHER_MOUSE_UP
+    )
+}
+
+fn is_mouse_drag(event_type: u32) -> bool {
+    matches!(
+        event_type,
+        EV_LEFT_MOUSE_DRAGGED | EV_RIGHT_MOUSE_DRAGGED | EV_OTHER_MOUSE_DRAGGED
+    )
+}
+
+fn is_button_mouse_event(event_type: u32) -> bool {
+    is_mouse_down(event_type) || is_mouse_up(event_type) || is_mouse_drag(event_type)
+}
+
+fn new_click_group_id() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as i64
+}
+
+fn click_group_for_event(state: &TapState, event_type: u32) -> Option<i64> {
+    if is_mouse_down(event_type) {
+        let id = new_click_group_id();
+        if let Ok(mut group) = state.current_click_group.lock() {
+            *group = Some(id);
+        }
+        return Some(id);
+    }
+
+    if is_mouse_drag(event_type) || is_mouse_up(event_type) {
+        return state
+            .current_click_group
+            .lock()
+            .ok()
+            .and_then(|group| *group);
+    }
+
+    None
+}
+
+fn clear_click_group_if_needed(state: &TapState, event_type: u32) {
+    if is_mouse_up(event_type) {
+        if let Ok(mut group) = state.current_click_group.lock() {
+            *group = None;
+        }
+    }
+}
+
+unsafe fn button_number_for_event(event_type: u32, event: *mut c_void) -> Option<i64> {
+    match event_type {
+        EV_LEFT_MOUSE_DOWN | EV_LEFT_MOUSE_UP | EV_LEFT_MOUSE_DRAGGED => Some(0),
+        EV_RIGHT_MOUSE_DOWN | EV_RIGHT_MOUSE_UP | EV_RIGHT_MOUSE_DRAGGED => Some(1),
+        EV_OTHER_MOUSE_DOWN | EV_OTHER_MOUSE_UP | EV_OTHER_MOUSE_DRAGGED => {
+            let button = CGEventGetIntegerValueField(event, FIELD_MOUSE_BUTTON);
+            Some(if button >= 0 { button } else { 2 })
+        }
+        _ => None,
+    }
+}
+
+unsafe fn click_state_for_event(event_type: u32, event: *mut c_void) -> i64 {
+    let click_state = CGEventGetIntegerValueField(event, FIELD_MOUSE_CLICK_STATE);
+    if click_state > 0 {
+        click_state
+    } else if is_button_mouse_event(event_type) {
+        1
+    } else {
+        0
+    }
+}
+
+unsafe fn stamp_mouse_routing_fields(
+    state: &TapState,
+    event_type: u32,
+    event: *mut c_void,
+    local_x: f64,
+    local_y: f64,
+) {
+    crate::input::skylight::set_window_location(event, local_x, local_y);
+    crate::input::skylight::set_integer_field(event, 40, state.target_pid as i64);
+
+    let Some(window_id) = state.target_window_id else {
+        return;
+    };
+
+    let window_id = window_id as i64;
+    let set = |field: u32, value: i64| {
+        crate::input::skylight::set_integer_field(event, field, value);
+    };
+
+    set(51, window_id);
+    set(91, window_id);
+    set(92, window_id);
+
+    if event_type == EV_SCROLL_WHEEL {
+        return;
+    }
+
+    if is_button_mouse_event(event_type) {
+        set(1, click_state_for_event(event_type, event));
+        if let Some(button) = button_number_for_event(event_type, event) {
+            set(3, button);
+        }
+        set(7, 3);
+        if let Some(group_id) = click_group_for_event(state, event_type) {
+            set(58, group_id);
+        }
+        clear_click_group_if_needed(state, event_type);
+    }
 }
 
 // ── Public session type ───────────────────────────────────────────────────────
@@ -277,8 +436,15 @@ impl EventTapSession {
     /// Accessibility permission).
     pub fn start(
         target_pid: i32,
-        view_x: f64, view_y: f64, view_w: f64, view_h: f64,
-        target_x: f64, target_y: f64, target_w: f64, target_h: f64,
+        target_window_id: Option<u32>,
+        view_x: f64,
+        view_y: f64,
+        view_w: f64,
+        view_h: f64,
+        target_x: f64,
+        target_y: f64,
+        target_w: f64,
+        target_h: f64,
         escape_taps: u32,
         escape_interval_ms: u64,
         on_mouse_move: Arc<dyn Fn(f64, f64) + Send + Sync>,
@@ -286,13 +452,21 @@ impl EventTapSession {
     ) -> anyhow::Result<Self> {
         let state = Box::new(TapState {
             target_pid,
-            view_x, view_y, view_w, view_h,
-            target_x, target_y, target_w, target_h,
+            target_window_id,
+            view_x,
+            view_y,
+            view_w,
+            view_h,
+            target_x,
+            target_y,
+            target_w,
+            target_h,
             escape_taps,
             escape_interval_ms,
             on_mouse_move,
             on_deactivate,
             alt_press_times: Mutex::new(Vec::new()),
+            current_click_group: Mutex::new(None),
             tap_port: Mutex::new(std::ptr::null_mut()),
         });
 
@@ -319,9 +493,8 @@ impl EventTapSession {
         // Store the port in TapState so the timeout-handler can re-enable it.
         *state.tap_port.lock().unwrap() = tap_port;
 
-        let run_loop_source = unsafe {
-            CFMachPortCreateRunLoopSource(std::ptr::null(), tap_port, 0)
-        };
+        let run_loop_source =
+            unsafe { CFMachPortCreateRunLoopSource(std::ptr::null(), tap_port, 0) };
 
         unsafe {
             let common_modes = kCFRunLoopCommonModes;

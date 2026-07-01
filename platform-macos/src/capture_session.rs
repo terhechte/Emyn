@@ -23,9 +23,9 @@
 //! session.deactivate()
 //! ```
 
+use crate::event_tap::EventTapSession;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use crate::event_tap::EventTapSession;
 
 // ── Data types exposed to Swift ───────────────────────────────────────────────
 
@@ -70,6 +70,86 @@ pub struct CaptureSession {
     queue: EventQueue,
 }
 
+impl CaptureSession {
+    fn activate_internal(
+        &self,
+        view_x: f64,
+        view_y: f64,
+        view_w: f64,
+        view_h: f64,
+        target_x: f64,
+        target_y: f64,
+        target_w: f64,
+        target_h: f64,
+        target_window_id: Option<u32>,
+        escape_taps: u32,
+        escape_interval_ms: u64,
+    ) -> Result<(), CaptureError> {
+        let mut tap_guard = self.tap.lock().map_err(|_| CaptureError::InternalError)?;
+        if tap_guard.is_some() {
+            return Err(CaptureError::AlreadyActive);
+        }
+
+        let queue_move = Arc::clone(&self.queue);
+        let on_mouse_move: Arc<dyn Fn(f64, f64) + Send + Sync> = Arc::new(move |x, y| {
+            if let Ok(mut q) = queue_move.lock() {
+                // Keep the queue bounded to avoid unbounded growth.
+                if q.len() < 128 {
+                    q.push_back(CaptureEvent::MouseMove {
+                        norm_x: x,
+                        norm_y: y,
+                    });
+                } else {
+                    // Overwrite last entry with latest position (tail-drop the backlog).
+                    if let Some(last) = q.back_mut() {
+                        *last = CaptureEvent::MouseMove {
+                            norm_x: x,
+                            norm_y: y,
+                        };
+                    }
+                }
+            }
+        });
+
+        let queue_deact = Arc::clone(&self.queue);
+        let on_deactivate: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            if let Ok(mut q) = queue_deact.lock() {
+                q.push_back(CaptureEvent::Deactivated);
+            }
+        });
+
+        if let Some(window_id) = target_window_id {
+            let _ = crate::input::skylight::activate_without_raise(
+                self.target_pid as libc::pid_t,
+                window_id,
+            );
+        }
+
+        let session = EventTapSession::start(
+            self.target_pid,
+            target_window_id,
+            view_x,
+            view_y,
+            view_w,
+            view_h,
+            target_x,
+            target_y,
+            target_w,
+            target_h,
+            escape_taps,
+            escape_interval_ms,
+            on_mouse_move,
+            on_deactivate,
+        )
+        .map_err(|e| CaptureError::TapCreationFailed {
+            message: e.to_string(),
+        })?;
+
+        *tap_guard = Some(session);
+        Ok(())
+    }
+}
+
 #[uniffi::export]
 impl CaptureSession {
     #[uniffi::constructor]
@@ -87,50 +167,30 @@ impl CaptureSession {
     /// Call `poll_event()` on a timer (~16 ms) after this returns to consume events.
     pub fn activate(
         &self,
-        view_x: f64, view_y: f64, view_w: f64, view_h: f64,
-        target_x: f64, target_y: f64, target_w: f64, target_h: f64,
+        view_x: f64,
+        view_y: f64,
+        view_w: f64,
+        view_h: f64,
+        target_x: f64,
+        target_y: f64,
+        target_w: f64,
+        target_h: f64,
         escape_taps: u32,
         escape_interval_ms: u64,
     ) -> Result<(), CaptureError> {
-        let mut tap_guard = self.tap.lock().map_err(|_| CaptureError::InternalError)?;
-        if tap_guard.is_some() {
-            return Err(CaptureError::AlreadyActive);
-        }
-
-        let queue_move = Arc::clone(&self.queue);
-        let on_mouse_move: Arc<dyn Fn(f64, f64) + Send + Sync> = Arc::new(move |x, y| {
-            if let Ok(mut q) = queue_move.lock() {
-                // Keep the queue bounded to avoid unbounded growth.
-                if q.len() < 128 {
-                    q.push_back(CaptureEvent::MouseMove { norm_x: x, norm_y: y });
-                } else {
-                    // Overwrite last entry with latest position (tail-drop the backlog).
-                    if let Some(last) = q.back_mut() {
-                        *last = CaptureEvent::MouseMove { norm_x: x, norm_y: y };
-                    }
-                }
-            }
-        });
-
-        let queue_deact = Arc::clone(&self.queue);
-        let on_deactivate: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            if let Ok(mut q) = queue_deact.lock() {
-                q.push_back(CaptureEvent::Deactivated);
-            }
-        });
-
-        let session = EventTapSession::start(
-            self.target_pid,
-            view_x, view_y, view_w, view_h,
-            target_x, target_y, target_w, target_h,
+        self.activate_internal(
+            view_x,
+            view_y,
+            view_w,
+            view_h,
+            target_x,
+            target_y,
+            target_w,
+            target_h,
+            None,
             escape_taps,
             escape_interval_ms,
-            on_mouse_move,
-            on_deactivate,
-        ).map_err(|e| CaptureError::TapCreationFailed { message: e.to_string() })?;
-
-        *tap_guard = Some(session);
-        Ok(())
+        )
     }
 
     /// Convenience: activate with `Rect` structs and default escape settings
@@ -141,9 +201,39 @@ impl CaptureSession {
         target_rect: Rect,
     ) -> Result<(), CaptureError> {
         self.activate(
-            view_rect.x, view_rect.y, view_rect.width, view_rect.height,
-            target_rect.x, target_rect.y, target_rect.width, target_rect.height,
-            3, 1000,
+            view_rect.x,
+            view_rect.y,
+            view_rect.width,
+            view_rect.height,
+            target_rect.x,
+            target_rect.y,
+            target_rect.width,
+            target_rect.height,
+            3,
+            1000,
+        )
+    }
+
+    /// Activate with a selected CGWindowID so forwarded mouse events carry
+    /// window-local hit-test coordinates and background-window routing fields.
+    pub fn activate_with_window_id(
+        &self,
+        view_rect: Rect,
+        target_rect: Rect,
+        target_window_id: u32,
+    ) -> Result<(), CaptureError> {
+        self.activate_internal(
+            view_rect.x,
+            view_rect.y,
+            view_rect.width,
+            view_rect.height,
+            target_rect.x,
+            target_rect.y,
+            target_rect.width,
+            target_rect.height,
+            Some(target_window_id),
+            3,
+            1000,
         )
     }
 
@@ -171,7 +261,9 @@ impl CaptureSession {
 
     /// Drain all pending events at once (useful for catching up after a pause).
     pub fn drain_events(&self) -> Vec<CaptureEvent> {
-        self.queue.lock().ok()
+        self.queue
+            .lock()
+            .ok()
             .map(|mut q| q.drain(..).collect())
             .unwrap_or_default()
     }

@@ -1,0 +1,19 @@
+{
+  "": {
+    "swift-dependencies": "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/master.swiftdeps"
+  },
+  "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/Sources/PlatformMacOSKit/WindowCaptureSession.swift": {
+    "dependencies": "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/WindowCaptureSession.d",
+    "object": "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/WindowCaptureSession.swift.o",
+    "swiftmodule": "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/WindowCaptureSession~partial.swiftmodule",
+    "swift-dependencies": "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/WindowCaptureSession.swiftdeps",
+    "diagnostics": "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/WindowCaptureSession.dia"
+  },
+  "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/Sources/PlatformMacOSKit/platform_macos.swift": {
+    "dependencies": "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/platform_macos.d",
+    "object": "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/platform_macos.swift.o",
+    "swiftmodule": "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/platform_macos~partial.swiftmodule",
+    "swift-dependencies": "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/platform_macos.swiftdeps",
+    "diagnostics": "/Users/terhechte/Developer/Swift/Emyn/platform-macos/swift/PlatformMacOSKit/.build/arm64-apple-macosx/debug/PlatformMacOSKit.build/platform_macos.dia"
+  }
+}

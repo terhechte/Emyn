@@ -241,6 +241,7 @@ struct ContentView: View {
 
             if windowControl.isActive, let cursor = windowControl.cursorNormalised {
                 GeometryReader { proxy in
+                    let region = windowControl.cursorRegionNormalised
                     Circle()
                         .fill(.black.opacity(0.32))
                         .overlay {
@@ -250,8 +251,8 @@ struct ContentView: View {
                         .frame(width: 18, height: 18)
                         .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
                         .position(
-                            x: proxy.size.width * cursor.x,
-                            y: proxy.size.height * cursor.y
+                            x: proxy.size.width * (region.minX + cursor.x * region.width),
+                            y: proxy.size.height * (region.minY + cursor.y * region.height)
                         )
                 }
                 .allowsHitTesting(false)
