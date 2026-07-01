@@ -139,6 +139,104 @@ private struct ProcessingSettings {
     var backgroundMode: BackgroundMode = .replacement
     var backgroundBlurRadius: Double = 18
     var background: BackgroundPreset = .black
+    var presentationEffects = PresentationEffects()
+}
+
+private struct AnimatedScalar {
+    var startValue: Double
+    var targetValue: Double
+    var startTime: CFTimeInterval
+    var duration: CFTimeInterval
+
+    init(value: Double) {
+        startValue = value
+        targetValue = value
+        startTime = CACurrentMediaTime()
+        duration = 0
+    }
+
+    func value(at time: CFTimeInterval) -> Double {
+        guard duration > 0 else { return targetValue }
+
+        let progress = max(0, min(1, (time - startTime) / duration))
+        let eased = progress * progress * (3 - 2 * progress)
+        return startValue + (targetValue - startValue) * eased
+    }
+
+    mutating func animate(to value: Double, duration: CFTimeInterval, at time: CFTimeInterval) {
+        startValue = self.value(at: time)
+        targetValue = value
+        startTime = time
+        self.duration = duration
+    }
+
+    mutating func set(_ value: Double, at time: CFTimeInterval) {
+        startValue = value
+        targetValue = value
+        startTime = time
+        duration = 0
+    }
+}
+
+private struct PresentationEffects {
+    var windowBackgroundOpacity = AnimatedScalar(value: 1)
+    var personScale = AnimatedScalar(value: 1)
+    var windowZoom = AnimatedScalar(value: 1)
+    var windowZoomCenter = CGPoint(x: 0.5, y: 0.5)
+    var activeImageOverlayPathsByID: [String: String] = [:]
+
+    mutating func setWindowBackgroundVisible(_ isVisible: Bool, animated: Bool, at time: CFTimeInterval) {
+        let opacity = isVisible ? 1.0 : 0.0
+        if animated {
+            windowBackgroundOpacity.animate(to: opacity, duration: 1, at: time)
+        } else {
+            windowBackgroundOpacity.set(opacity, at: time)
+        }
+    }
+
+    mutating func toggleWindowBackgroundVisibility(at time: CFTimeInterval) {
+        windowBackgroundOpacity.animate(
+            to: windowBackgroundOpacity.targetValue > 0.5 ? 0 : 1,
+            duration: 1,
+            at: time
+        )
+    }
+
+    mutating func togglePersonPosition(at time: CFTimeInterval) {
+        personScale.animate(
+            to: personScale.targetValue > 0.75 ? 0.5 : 1,
+            duration: 0.35,
+            at: time
+        )
+    }
+
+    mutating func toggleWindowZoom(at time: CFTimeInterval) {
+        windowZoom.animate(
+            to: windowZoom.targetValue > 1.5 ? 1 : 2,
+            duration: 1,
+            at: time
+        )
+    }
+
+    func resolved(at time: CFTimeInterval) -> ResolvedPresentationEffects {
+        ResolvedPresentationEffects(
+            windowBackgroundOpacity: windowBackgroundOpacity.value(at: time),
+            personScale: personScale.value(at: time),
+            windowZoom: windowZoom.value(at: time),
+            windowZoomCenter: windowZoomCenter,
+            activeImageOverlayPaths: activeImageOverlayPathsByID
+                .sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }
+                .map(\.value)
+        )
+    }
+}
+
+private struct ResolvedPresentationEffects {
+    var windowBackgroundOpacity: Double
+    var personScale: Double
+    var windowZoom: Double
+    var windowZoomCenter: CGPoint
+    var activeImageOverlayPaths: [String]
 }
 
 final class CameraPipeline: NSObject, ObservableObject {
@@ -205,6 +303,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     private let renderLock = NSLock()
     private let segmentationStateLock = NSLock()
     private let backgroundLock = NSLock()
+    private let imageOverlayLock = NSLock()
 
     private let ciContext: CIContext
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
@@ -225,6 +324,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     private var lastFPSUpdate = CACurrentMediaTime()
     private var windowBackgroundStream: SCStream?
     private var latestWindowBackgroundPixelBuffer: CVPixelBuffer?
+    private var imageOverlayCache: [String: CIImage] = [:]
 
     override init() {
         if let metalDevice = MTLCreateSystemDefaultDevice() {
@@ -323,6 +423,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     }
 
     func selectWindowBackground(_ option: WindowBackgroundOption) {
+        setWindowBackgroundVisible(true, animated: false)
         selectedWindowBackgroundTitle = option.displayTitle
         windowBackgroundStatusText = "Starting window background"
         startWindowBackgroundCapture(window: option.window, title: option.displayTitle)
@@ -335,6 +436,54 @@ final class CameraPipeline: NSObject, ObservableObject {
 
         screenCaptureQueue.async {
             self.stopWindowBackgroundStream()
+        }
+    }
+
+    func setWindowBackgroundVisible(_ isVisible: Bool, animated: Bool) {
+        let now = CACurrentMediaTime()
+        updateSettings { settings in
+            settings.presentationEffects.setWindowBackgroundVisible(isVisible, animated: animated, at: now)
+        }
+    }
+
+    func toggleWindowBackgroundVisibility() {
+        let now = CACurrentMediaTime()
+        updateSettings { settings in
+            settings.presentationEffects.toggleWindowBackgroundVisibility(at: now)
+        }
+    }
+
+    func togglePersonCompactPosition() {
+        let now = CACurrentMediaTime()
+        updateSettings { settings in
+            settings.presentationEffects.togglePersonPosition(at: now)
+        }
+    }
+
+    func toggleWindowZoom() {
+        let now = CACurrentMediaTime()
+        updateSettings { settings in
+            settings.presentationEffects.toggleWindowZoom(at: now)
+        }
+    }
+
+    func setWindowZoomCenter(_ center: CGPoint?) {
+        let clampedCenter = CGPoint(
+            x: max(0, min(1, center?.x ?? 0.5)),
+            y: max(0, min(1, center?.y ?? 0.5))
+        )
+        updateSettings { settings in
+            settings.presentationEffects.windowZoomCenter = clampedCenter
+        }
+    }
+
+    func toggleImageOverlay(identifier: String, imagePath: String) {
+        updateSettings { settings in
+            if settings.presentationEffects.activeImageOverlayPathsByID[identifier] == nil {
+                settings.presentationEffects.activeImageOverlayPathsByID[identifier] = imagePath
+            } else {
+                settings.presentationEffects.activeImageOverlayPathsByID.removeValue(forKey: identifier)
+            }
         }
     }
 
@@ -485,24 +634,34 @@ final class CameraPipeline: NSObject, ObservableObject {
         let outputExtent = CGRect(origin: .zero, size: outputSize)
         let foreground = aspectFillImage(from: pixelBuffer, targetSize: outputSize)
         let settings = currentSettings()
+        let effects = settings.presentationEffects.resolved(at: CACurrentMediaTime())
 
-        let renderedImage: CIImage
+        var renderedImage: CIImage
         if let mask = currentMask() {
             let upscaledMask = upscale(mask: mask, to: outputExtent)
             let background = backgroundImage(
                 settings: settings,
+                effects: effects,
                 foreground: foreground,
                 outputExtent: outputExtent
             )
 
-            renderedImage = foreground.applyingFilter("CIBlendWithMask", parameters: [
-                kCIInputBackgroundImageKey: background,
-                kCIInputMaskImageKey: upscaledMask
-            ])
-            .cropped(to: outputExtent)
+            renderedImage = composePerson(
+                foreground: foreground,
+                mask: upscaledMask,
+                background: background,
+                outputExtent: outputExtent,
+                scale: effects.personScale
+            )
         } else {
             renderedImage = foreground.cropped(to: outputExtent)
         }
+
+        renderedImage = applyImageOverlays(
+            effects.activeImageOverlayPaths,
+            over: renderedImage,
+            outputExtent: outputExtent
+        )
 
         ciContext.render(
             renderedImage,
@@ -537,17 +696,61 @@ final class CameraPipeline: NSObject, ObservableObject {
             .transformed(by: CGAffineTransform(translationX: -crop.origin.x, y: -crop.origin.y))
     }
 
-    private func backgroundImage(settings: ProcessingSettings, foreground: CIImage, outputExtent: CGRect) -> CIImage {
+    private func backgroundImage(
+        settings: ProcessingSettings,
+        effects: ResolvedPresentationEffects,
+        foreground: CIImage,
+        outputExtent: CGRect
+    ) -> CIImage {
+        let baseBackground = baseBackgroundImage(
+            settings: settings,
+            foreground: foreground,
+            outputExtent: outputExtent
+        )
+
+        guard let pixelBuffer = currentWindowBackgroundPixelBuffer() else {
+            return baseBackground
+        }
+
+        let opacity = max(0, min(1, effects.windowBackgroundOpacity))
+        guard opacity > 0.001 else {
+            return baseBackground
+        }
+
+        var windowBackground = aspectFillImage(from: pixelBuffer, targetSize: outputExtent.size)
+            .cropped(to: outputExtent)
+
+        if effects.windowZoom > 1.001 {
+            windowBackground = zoomedWindowBackground(
+                windowBackground,
+                zoom: effects.windowZoom,
+                center: effects.windowZoomCenter,
+                outputExtent: outputExtent
+            )
+        }
+
+        guard opacity < 0.999 else {
+            return windowBackground
+        }
+
+        return windowBackground
+            .applyingFilter("CIMix", parameters: [
+                kCIInputBackgroundImageKey: baseBackground,
+                kCIInputAmountKey: opacity
+            ])
+            .cropped(to: outputExtent)
+    }
+
+    private func baseBackgroundImage(
+        settings: ProcessingSettings,
+        foreground: CIImage,
+        outputExtent: CGRect
+    ) -> CIImage {
         if settings.backgroundMode == .blur {
             let radius = max(0, settings.backgroundBlurRadius)
             return foreground
                 .clampedToExtent()
                 .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
-                .cropped(to: outputExtent)
-        }
-
-        if let pixelBuffer = currentWindowBackgroundPixelBuffer() {
-            return aspectFillImage(from: pixelBuffer, targetSize: outputExtent.size)
                 .cropped(to: outputExtent)
         }
 
@@ -559,6 +762,121 @@ final class CameraPipeline: NSObject, ObservableObject {
             alpha: color.alpha
         ))
         .cropped(to: outputExtent)
+    }
+
+    private func composePerson(
+        foreground: CIImage,
+        mask: CIImage,
+        background: CIImage,
+        outputExtent: CGRect,
+        scale: Double
+    ) -> CIImage {
+        let clampedScale = max(0.1, min(1, scale))
+
+        if clampedScale >= 0.999 {
+            return foreground.applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputBackgroundImageKey: background,
+                kCIInputMaskImageKey: mask
+            ])
+            .cropped(to: outputExtent)
+        }
+
+        let clear = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0))
+            .cropped(to: outputExtent)
+        let maskedForeground = foreground.applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: clear,
+            kCIInputMaskImageKey: mask
+        ])
+        .cropped(to: outputExtent)
+
+        return maskedForeground
+            .transformed(by: CGAffineTransform(scaleX: clampedScale, y: clampedScale))
+            .transformed(by: CGAffineTransform(
+                translationX: outputExtent.width * (1 - clampedScale),
+                y: 0
+            ))
+            .composited(over: background)
+            .cropped(to: outputExtent)
+    }
+
+    private func zoomedWindowBackground(
+        _ image: CIImage,
+        zoom: Double,
+        center: CGPoint,
+        outputExtent: CGRect
+    ) -> CIImage {
+        let clampedZoom = max(1, min(4, zoom))
+        let cropSize = CGSize(
+            width: outputExtent.width / clampedZoom,
+            height: outputExtent.height / clampedZoom
+        )
+        let centerX = outputExtent.minX + outputExtent.width * max(0, min(1, center.x))
+        let centerY = outputExtent.minY + outputExtent.height * (1 - max(0, min(1, center.y)))
+        let origin = CGPoint(
+            x: max(outputExtent.minX, min(outputExtent.maxX - cropSize.width, centerX - cropSize.width * 0.5)),
+            y: max(outputExtent.minY, min(outputExtent.maxY - cropSize.height, centerY - cropSize.height * 0.5))
+        )
+        let crop = CGRect(origin: origin, size: cropSize)
+
+        return image
+            .cropped(to: crop)
+            .transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
+            .transformed(by: CGAffineTransform(scaleX: clampedZoom, y: clampedZoom))
+            .cropped(to: outputExtent)
+    }
+
+    private func applyImageOverlays(
+        _ imagePaths: [String],
+        over image: CIImage,
+        outputExtent: CGRect
+    ) -> CIImage {
+        imagePaths.reduce(image.cropped(to: outputExtent)) { currentImage, imagePath in
+            guard let overlayImage = cachedOverlayImage(for: imagePath) else {
+                return currentImage
+            }
+
+            let normalizedOverlay = normalizeExtent(overlayImage)
+            guard normalizedOverlay.extent.width > 0, normalizedOverlay.extent.height > 0 else {
+                return currentImage
+            }
+
+            let scale = min(
+                outputExtent.width / normalizedOverlay.extent.width,
+                outputExtent.height / normalizedOverlay.extent.height
+            )
+            let scaledSize = CGSize(
+                width: normalizedOverlay.extent.width * scale,
+                height: normalizedOverlay.extent.height * scale
+            )
+            return normalizedOverlay
+                .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                .transformed(by: CGAffineTransform(
+                    translationX: outputExtent.midX - scaledSize.width * 0.5,
+                    y: outputExtent.midY - scaledSize.height * 0.5
+                ))
+                .composited(over: currentImage)
+                .cropped(to: outputExtent)
+        }
+    }
+
+    private func cachedOverlayImage(for imagePath: String) -> CIImage? {
+        imageOverlayLock.lock()
+        if let image = imageOverlayCache[imagePath] {
+            imageOverlayLock.unlock()
+            return image
+        }
+        imageOverlayLock.unlock()
+
+        let url = URL(fileURLWithPath: imagePath)
+        guard let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else {
+            return nil
+        }
+
+        imageOverlayLock.lock()
+        imageOverlayCache[imagePath] = image
+        imageOverlayLock.unlock()
+
+        return image
     }
 
     private func upscale(mask: CIImage, to extent: CGRect) -> CIImage {

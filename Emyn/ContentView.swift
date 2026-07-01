@@ -12,7 +12,9 @@ struct ContentView: View {
     @StateObject private var extensionInstaller = SystemExtensionInstaller()
     @StateObject private var windowBackgroundPicker = WindowBackgroundPickerModel()
     @StateObject private var windowControl = WindowControlCoordinator()
+    @StateObject private var functionKeys = FunctionKeyController()
     @State private var isWindowBackgroundPickerPresented = false
+    @State private var isFunctionKeyConfigurationPresented = false
     @State private var selectedWindowBackgroundOption: WindowBackgroundOption?
     @State private var previewNSView: SampleBufferPreviewView?
     @AppStorage("excludeFunctionKeysDuringWindowControl") private var excludeFunctionKeysDuringWindowControl = true
@@ -28,14 +30,20 @@ struct ContentView: View {
         .onAppear {
             pipeline.refreshCameras()
             pipeline.start()
+            functionKeys.onTrigger = handleFunctionKeyTrigger(_:)
+            functionKeys.startMonitoring()
         }
         .onDisappear {
+            functionKeys.stopMonitoring()
             windowControl.deactivate()
             pipeline.stop()
             pipeline.clearWindowBackground()
         }
         .onChange(of: excludeFunctionKeysDuringWindowControl) { newValue in
             windowControl.setExcludeFunctionKeys(newValue)
+        }
+        .onReceive(windowControl.$cursorNormalised) { cursor in
+            pipeline.setWindowZoomCenter(cursor)
         }
         .sheet(isPresented: $isWindowBackgroundPickerPresented) {
             WindowBackgroundPickerView(
@@ -48,6 +56,14 @@ struct ContentView: View {
                 },
                 onCancel: {
                     isWindowBackgroundPickerPresented = false
+                }
+            )
+        }
+        .sheet(isPresented: $isFunctionKeyConfigurationPresented) {
+            FunctionKeyConfigurationView(
+                controller: functionKeys,
+                onClose: {
+                    isFunctionKeyConfigurationPresented = false
                 }
             )
         }
@@ -194,59 +210,74 @@ struct ContentView: View {
                                 .help(preset.title)
                             }
                         }
+                    }
 
-                        HStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        Button {
+                            windowBackgroundPicker.refresh()
+                            isWindowBackgroundPickerPresented = true
+                        } label: {
+                            Label("Choose Window", systemImage: "rectangle.on.rectangle")
+                        }
+                        .controlSize(.small)
+
+                        if pipeline.selectedWindowBackgroundTitle != nil {
                             Button {
-                                windowBackgroundPicker.refresh()
-                                isWindowBackgroundPickerPresented = true
+                                clearSelectedWindowBackground()
                             } label: {
-                                Label("Choose Window", systemImage: "rectangle.on.rectangle")
+                                Image(systemName: "xmark.circle.fill")
                             }
                             .controlSize(.small)
-
-                            if pipeline.selectedWindowBackgroundTitle != nil {
-                                Button {
-                                    clearSelectedWindowBackground()
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                }
-                                .controlSize(.small)
-                                .help("Clear window background")
-                            }
+                            .help("Clear window background")
                         }
+                    }
 
-                        Text(pipeline.selectedWindowBackgroundTitle ?? pipeline.windowBackgroundStatusText)
+                    Text(pipeline.selectedWindowBackgroundTitle ?? pipeline.windowBackgroundStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+
+                    if pipeline.selectedWindowBackgroundTitle != nil, let selectedWindowBackgroundOption {
+                        Toggle(
+                            "Exclude Function Keys",
+                            isOn: $excludeFunctionKeysDuringWindowControl
+                        )
+                        .toggleStyle(.checkbox)
+                        .controlSize(.small)
+                        .help("Keep F1-F12 available outside the controlled window")
+
+                        Button {
+                            toggleWindowControl(for: selectedWindowBackgroundOption)
+                        } label: {
+                            Label(
+                                windowControl.isActive ? "Stop Control" : "Control Window",
+                                systemImage: windowControl.isActive ? "xmark.circle" : "cursorarrow"
+                            )
+                        }
+                        .controlSize(.small)
+                        .disabled(previewNSView == nil)
+
+                        Text(windowControl.statusText)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
-
-                        if pipeline.selectedWindowBackgroundTitle != nil, let selectedWindowBackgroundOption {
-                            Toggle(
-                                "Exclude Function Keys",
-                                isOn: $excludeFunctionKeysDuringWindowControl
-                            )
-                            .toggleStyle(.checkbox)
-                            .controlSize(.small)
-                            .help("Keep F1-F12 available outside the controlled window")
-
-                            Button {
-                                toggleWindowControl(for: selectedWindowBackgroundOption)
-                            } label: {
-                                Label(
-                                    windowControl.isActive ? "Stop Control" : "Control Window",
-                                    systemImage: windowControl.isActive ? "xmark.circle" : "cursorarrow"
-                                )
-                            }
-                            .controlSize(.small)
-                            .disabled(previewNSView == nil)
-
-                            Text(windowControl.statusText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
                     }
                 }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Button {
+                    isFunctionKeyConfigurationPresented = true
+                } label: {
+                    Label("Function Keys", systemImage: "keyboard")
+                }
+
+                Text(functionKeys.statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
 
             Divider()
@@ -334,9 +365,6 @@ struct ContentView: View {
         Binding {
             pipeline.backgroundMode
         } set: { newValue in
-            if newValue == .blur {
-                clearSelectedWindowBackground()
-            }
             pipeline.backgroundMode = newValue
         }
     }
@@ -357,6 +385,25 @@ struct ContentView: View {
         windowControl.deactivate()
         selectedWindowBackgroundOption = nil
         pipeline.clearWindowBackground()
+    }
+
+    private func handleFunctionKeyTrigger(_ trigger: FunctionKeyTrigger) {
+        switch trigger.slot.action {
+        case .none:
+            break
+        case .toggleWindowBackground:
+            pipeline.toggleWindowBackgroundVisibility()
+        case .togglePersonPosition:
+            pipeline.togglePersonCompactPosition()
+        case .toggleImageOverlay:
+            guard let imagePath = trigger.slot.imagePath else { return }
+            pipeline.toggleImageOverlay(
+                identifier: trigger.key.storageIdentifier,
+                imagePath: imagePath
+            )
+        case .toggleWindowZoom:
+            pipeline.toggleWindowZoom()
+        }
     }
 }
 
