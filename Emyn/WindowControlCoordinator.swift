@@ -1,7 +1,8 @@
 import AppKit
+import ApplicationServices
 import Combine
+import PlatformMacOSKit
 import ScreenCaptureKit
-import SilvaLite
 
 @MainActor
 final class WindowControlCoordinator: ObservableObject {
@@ -9,7 +10,7 @@ final class WindowControlCoordinator: ObservableObject {
     @Published private(set) var statusText = "Window control inactive"
     @Published private(set) var cursorNormalised: CGPoint?
 
-    private var session: CaptureSession?
+    private var session: WindowCaptureSession?
 
     func activate(option: WindowBackgroundOption, mappedTo view: NSView?) {
         guard !isActive else { return }
@@ -17,8 +18,11 @@ final class WindowControlCoordinator: ObservableObject {
             statusText = "Preview unavailable"
             return
         }
-        guard let pid = option.window.owningApplication?.processID,
-              let app = AppBrowser.runningApps().first(where: { $0.pid == pid }) else {
+        guard Self.isAccessibilityTrusted(prompt: true) else {
+            statusText = "Grant Accessibility access, then try again"
+            return
+        }
+        guard let pid = option.window.owningApplication?.processID else {
             statusText = "Target app unavailable"
             return
         }
@@ -34,8 +38,9 @@ final class WindowControlCoordinator: ObservableObject {
             return
         }
 
-        let controller = RemoteAppController(app: app)
-        let captureSession = CaptureSession(controller: controller)
+        view.window?.orderFrontRegardless()
+
+        let captureSession = WindowCaptureSession(targetPid: pid)
         captureSession.onMouseMove = { [weak self] normalised in
             self?.cursorNormalised = normalised
         }
@@ -43,9 +48,10 @@ final class WindowControlCoordinator: ObservableObject {
             self?.finishDeactivation(status: "Window control stopped")
         }
 
-        captureSession.activate(viewBoundsInCGSpace: viewBounds, targetBoundsInCGSpace: targetBounds)
-        guard captureSession.isActive else {
-            statusText = "Accessibility permission is required"
+        do {
+            try captureSession.activate(viewBoundsInCGSpace: viewBounds, targetBoundsInCGSpace: targetBounds)
+        } catch {
+            statusText = error.localizedDescription
             cursorNormalised = nil
             return
         }
@@ -85,5 +91,13 @@ final class WindowControlCoordinator: ObservableObject {
             width: screenRect.width,
             height: screenRect.height
         )
+    }
+
+    private static func isAccessibilityTrusted(prompt: Bool) -> Bool {
+        let options = [
+            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt
+        ] as CFDictionary
+
+        return AXIsProcessTrustedWithOptions(options)
     }
 }
