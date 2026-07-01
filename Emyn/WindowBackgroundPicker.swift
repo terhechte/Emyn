@@ -41,8 +41,11 @@ final class WindowBackgroundPickerModel: ObservableObject {
             guard let self else { return }
 
             do {
-                let content = try await SCShareableContent.current
-                let windows = Self.makeOptions(from: content.windows)
+                let content = try await SCShareableContent.excludingDesktopWindows(
+                    false,
+                    onScreenWindowsOnly: false
+                )
+                let windows = Self.makeOptions(from: content)
 
                 guard refreshGeneration == generation else { return }
                 options = windows
@@ -77,11 +80,13 @@ final class WindowBackgroundPickerModel: ObservableObject {
         }
     }
 
-    private static func makeOptions(from windows: [SCWindow]) -> [WindowBackgroundOption] {
+    private static func makeOptions(from content: SCShareableContent) -> [WindowBackgroundOption] {
         let currentBundleIdentifier = Bundle.main.bundleIdentifier
+        let displayFrames = content.displays.map(\.frame)
 
-        return windows.compactMap { window -> WindowBackgroundOption? in
-            guard window.isOnScreen,
+        return content.windows.compactMap { window -> WindowBackgroundOption? in
+            let intersectsDisplay = displayFrames.isEmpty || displayFrames.contains { $0.intersects(window.frame) }
+            guard intersectsDisplay,
                   window.windowLayer == 0,
                   window.frame.width >= 96,
                   window.frame.height >= 72,
