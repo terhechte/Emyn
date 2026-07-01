@@ -21,8 +21,10 @@
 	<key>CMIOExtension</key>
 	<dict>
 		<key>CMIOExtensionMachServiceName</key>
-		<string>$(TeamIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+		<string>group.com.stylemac.Emyn.VirtualCameraExtension</string>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Emyn virtual camera uses camera access to provide the processed video feed.</string>
 	<key>NSSystemExtensionUsageDescription</key>
 	<string>Emyn installs a virtual camera that provides the processed video feed to video conferencing apps.</string>
 </dict>

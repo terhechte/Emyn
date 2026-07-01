@@ -13,13 +13,30 @@ BUILD_DIR="$ROOT/target/$CRATE_PACKAGE-xcframework"
 RELEASE_DIR="release"
 MACOS_DEPLOYMENT_TARGET="${PLATFORM_MACOS_DEPLOYMENT_TARGET:-13.0}"
 
-# Apple Silicon macOS only — no other slices.
-MACOS_TARGET="aarch64-apple-darwin"
+MACOS_TARGETS=(
+  "aarch64-apple-darwin"
+  "x86_64-apple-darwin"
+)
 
 if ! command -v xcodebuild >/dev/null 2>&1; then
   echo "xcodebuild is required to create the xcframework" >&2
   exit 1
 fi
+
+if ! command -v rustup >/dev/null 2>&1; then
+  echo "rustup is required to install and resolve Rust macOS targets" >&2
+  exit 1
+fi
+
+cd "$ROOT"
+
+CARGO_BIN="$(rustup which cargo)"
+RUSTC_BIN="$(rustup which rustc)"
+
+run_cargo() {
+  RUSTC="$RUSTC_BIN" MACOSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
+    "$CARGO_BIN" "$@"
+}
 
 fix_static_library_modulemap() {
   local modulemap="$1/module.modulemap"
@@ -32,14 +49,17 @@ fix_static_library_modulemap() {
   perl -0pi -e "s/\\Aframework module \\Q$FFI_MODULE_NAME\\E /module $FFI_MODULE_NAME /" "$modulemap"
 }
 
-echo "Installing Rust target: $MACOS_TARGET"
-rustup target add "$MACOS_TARGET"
+MACOS_LIBS=()
+for macos_target in "${MACOS_TARGETS[@]}"; do
+  echo "Installing Rust target: $macos_target"
+  rustup target add "$macos_target"
 
-echo "Building Rust static library ($MACOS_TARGET, release)"
-MACOSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
-  cargo build -p "$CRATE_PACKAGE" --release --target "$MACOS_TARGET"
+  echo "Building Rust static library ($macos_target, release)"
+  run_cargo build -p "$CRATE_PACKAGE" --release --target "$macos_target"
+  MACOS_LIBS+=("$ROOT/target/$macos_target/$RELEASE_DIR/lib$LIB_NAME.a")
+done
 
-MACOS_LIB="$ROOT/target/$MACOS_TARGET/$RELEASE_DIR/lib$LIB_NAME.a"
+MACOS_LIB="${MACOS_LIBS[0]}"
 
 GEN_SWIFT_DIR="$BUILD_DIR/generated-swift"
 HEADERS_DIR="$BUILD_DIR/headers"
@@ -47,11 +67,11 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$GEN_SWIFT_DIR" "$HEADERS_DIR"
 
 echo "Generating UniFFI Swift bindings"
-cargo run -p "$CRATE_PACKAGE" --features uniffi-bindgen --bin uniffi-bindgen-swift -- \
+run_cargo run -p "$CRATE_PACKAGE" --features uniffi-bindgen --bin uniffi-bindgen-swift -- \
   "$MACOS_LIB" "$GEN_SWIFT_DIR" --swift-sources
-cargo run -p "$CRATE_PACKAGE" --features uniffi-bindgen --bin uniffi-bindgen-swift -- \
+run_cargo run -p "$CRATE_PACKAGE" --features uniffi-bindgen --bin uniffi-bindgen-swift -- \
   "$MACOS_LIB" "$HEADERS_DIR" --headers
-cargo run -p "$CRATE_PACKAGE" --features uniffi-bindgen --bin uniffi-bindgen-swift -- \
+run_cargo run -p "$CRATE_PACKAGE" --features uniffi-bindgen --bin uniffi-bindgen-swift -- \
   "$MACOS_LIB" "$HEADERS_DIR" --xcframework --modulemap \
   --module-name "$FFI_MODULE_NAME" --modulemap-filename module.modulemap
 fix_static_library_modulemap "$HEADERS_DIR"
@@ -65,8 +85,13 @@ done < <(find "$GEN_SWIFT_DIR" -maxdepth 1 -type f -name '*.swift' -print0)
 
 echo "Creating xcframework"
 rm -rf "$PACKAGE_DIR/$FFI_MODULE_NAME.xcframework"
+UNIVERSAL_LIB_DIR="$BUILD_DIR/macos-universal"
+UNIVERSAL_LIB="$UNIVERSAL_LIB_DIR/lib$LIB_NAME.a"
+mkdir -p "$UNIVERSAL_LIB_DIR"
+lipo -create "${MACOS_LIBS[@]}" -output "$UNIVERSAL_LIB"
+
 xcodebuild -create-xcframework \
-  -library "$MACOS_LIB" -headers "$HEADERS_DIR" \
+  -library "$UNIVERSAL_LIB" -headers "$HEADERS_DIR" \
   -output "$PACKAGE_DIR/$FFI_MODULE_NAME.xcframework"
 
 echo "Built $PACKAGE_DIR/$FFI_MODULE_NAME.xcframework"

@@ -529,47 +529,47 @@ fileprivate struct FfiConverterString: FfiConverter {
 
 
 public protocol CaptureSessionProtocol : AnyObject {
-
+    
     /**
      * Start capturing. All coordinates must be in CG screen space (top-left
      * origin, y increasing downward — same as CGEventGetLocation and the AX API).
      *
      * Call `poll_event()` on a timer (~16 ms) after this returns to consume events.
      */
-    func activate(viewX: Double, viewY: Double, viewW: Double, viewH: Double, targetX: Double, targetY: Double, targetW: Double, targetH: Double, escapeTaps: UInt32, escapeIntervalMs: UInt64) throws
-
+    func activate(viewX: Double, viewY: Double, viewW: Double, viewH: Double, targetX: Double, targetY: Double, targetW: Double, targetH: Double, escapeTaps: UInt32, escapeIntervalMs: UInt64) throws 
+    
     /**
      * Convenience: activate with `Rect` structs and default escape settings
      * (3 Option-key taps within 1 second).
      */
-    func activateWithRects(viewRect: Rect, targetRect: Rect) throws
-
+    func activateWithRects(viewRect: Rect, targetRect: Rect) throws 
+    
     /**
      * Activate with a selected CGWindowID so forwarded mouse events carry
      * window-local hit-test coordinates and background-window routing fields.
      */
-    func activateWithWindowId(viewRect: Rect, targetRect: Rect, targetWindowId: UInt32) throws
-
+    func activateWithWindowId(viewRect: Rect, targetRect: Rect, targetWindowId: UInt32) throws 
+    
     /**
      * Stop capturing and restore the system cursor. Idempotent.
      */
-    func deactivate()
-
+    func deactivate() 
+    
     /**
      * Drain all pending events at once (useful for catching up after a pause).
      */
     func drainEvents()  -> [CaptureEvent]
-
+    
     /**
      * Returns whether F1-F12 are currently excluded from forwarding.
      */
     func excludeFunctionKeys()  -> Bool
-
+    
     /**
      * Returns `true` when the tap is currently active.
      */
     func isActive()  -> Bool
-
+    
     /**
      * Returns the next pending event, or `None` when the queue is empty.
      *
@@ -579,18 +579,18 @@ public protocol CaptureSessionProtocol : AnyObject {
      * ```
      */
     func pollEvent()  -> CaptureEvent?
-
+    
     /**
      * When enabled, F1-F12 are not forwarded to the controlled app/window and
      * continue through the original event stream.
      */
-    func setExcludeFunctionKeys(exclude: Bool)
-
+    func setExcludeFunctionKeys(exclude: Bool) 
+    
     /**
      * Target PID this session controls.
      */
     func targetPid()  -> Int32
-
+    
 }
 
 open class CaptureSession:
@@ -648,9 +648,9 @@ public convenience init(targetPid: Int32) {
         try! rustCall { uniffi_platform_macos_fn_free_capturesession(pointer, $0) }
     }
 
+    
 
-
-
+    
     /**
      * Start capturing. All coordinates must be in CG screen space (top-left
      * origin, y increasing downward — same as CGEventGetLocation and the AX API).
@@ -672,7 +672,7 @@ open func activate(viewX: Double, viewY: Double, viewW: Double, viewH: Double, t
     )
 }
 }
-
+    
     /**
      * Convenience: activate with `Rect` structs and default escape settings
      * (3 Option-key taps within 1 second).
@@ -684,7 +684,7 @@ open func activateWithRects(viewRect: Rect, targetRect: Rect)throws  {try rustCa
     )
 }
 }
-
+    
     /**
      * Activate with a selected CGWindowID so forwarded mouse events carry
      * window-local hit-test coordinates and background-window routing fields.
@@ -697,7 +697,7 @@ open func activateWithWindowId(viewRect: Rect, targetRect: Rect, targetWindowId:
     )
 }
 }
-
+    
     /**
      * Stop capturing and restore the system cursor. Idempotent.
      */
@@ -706,7 +706,7 @@ open func deactivate() {try! rustCall() {
     )
 }
 }
-
+    
     /**
      * Drain all pending events at once (useful for catching up after a pause).
      */
@@ -716,7 +716,7 @@ open func drainEvents() -> [CaptureEvent] {
     )
 })
 }
-
+    
     /**
      * Returns whether F1-F12 are currently excluded from forwarding.
      */
@@ -726,7 +726,7 @@ open func excludeFunctionKeys() -> Bool {
     )
 })
 }
-
+    
     /**
      * Returns `true` when the tap is currently active.
      */
@@ -736,7 +736,7 @@ open func isActive() -> Bool {
     )
 })
 }
-
+    
     /**
      * Returns the next pending event, or `None` when the queue is empty.
      *
@@ -751,7 +751,7 @@ open func pollEvent() -> CaptureEvent? {
     )
 })
 }
-
+    
     /**
      * When enabled, F1-F12 are not forwarded to the controlled app/window and
      * continue through the original event stream.
@@ -762,7 +762,7 @@ open func setExcludeFunctionKeys(exclude: Bool) {try! rustCall() {
     )
 }
 }
-
+    
     /**
      * Target PID this session controls.
      */
@@ -772,7 +772,7 @@ open func targetPid() -> Int32 {
     )
 })
 }
-
+    
 
 }
 
@@ -879,9 +879,9 @@ public struct FfiConverterTypeRect: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Rect {
         return
             try Rect(
-                x: FfiConverterDouble.read(from: &buf),
-                y: FfiConverterDouble.read(from: &buf),
-                width: FfiConverterDouble.read(from: &buf),
+                x: FfiConverterDouble.read(from: &buf), 
+                y: FfiConverterDouble.read(from: &buf), 
+                width: FfiConverterDouble.read(from: &buf), 
                 height: FfiConverterDouble.read(from: &buf)
         )
     }
@@ -912,8 +912,8 @@ public func FfiConverterTypeRect_lower(_ value: Rect) -> RustBuffer {
 
 public enum CaptureError {
 
-
-
+    
+    
     case AlreadyActive
     case TapCreationFailed(message: String
     )
@@ -931,9 +931,9 @@ public struct FfiConverterTypeCaptureError: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
+        
 
-
-
+        
         case 1: return .AlreadyActive
         case 2: return .TapCreationFailed(
             message: try FfiConverterString.read(from: &buf)
@@ -947,22 +947,22 @@ public struct FfiConverterTypeCaptureError: FfiConverterRustBuffer {
     public static func write(_ value: CaptureError, into buf: inout [UInt8]) {
         switch value {
 
+        
 
-
-
-
+        
+        
         case .AlreadyActive:
             writeInt(&buf, Int32(1))
-
-
+        
+        
         case let .TapCreationFailed(message):
             writeInt(&buf, Int32(2))
             FfiConverterString.write(message, into: &buf)
-
-
+            
+        
         case .InternalError:
             writeInt(&buf, Int32(3))
-
+        
         }
     }
 }
@@ -983,7 +983,7 @@ extension CaptureError: Foundation.LocalizedError {
  */
 
 public enum CaptureEvent {
-
+    
     /**
      * Normalised (0–1) cursor position within the host view.
      */
@@ -1005,29 +1005,29 @@ public struct FfiConverterTypeCaptureEvent: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CaptureEvent {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-
+        
         case 1: return .mouseMove(normX: try FfiConverterDouble.read(from: &buf), normY: try FfiConverterDouble.read(from: &buf)
         )
-
+        
         case 2: return .deactivated
-
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: CaptureEvent, into buf: inout [UInt8]) {
         switch value {
-
-
+        
+        
         case let .mouseMove(normX,normY):
             writeInt(&buf, Int32(1))
             FfiConverterDouble.write(normX, into: &buf)
             FfiConverterDouble.write(normY, into: &buf)
-
-
+            
+        
         case .deactivated:
             writeInt(&buf, Int32(2))
-
+        
         }
     }
 }

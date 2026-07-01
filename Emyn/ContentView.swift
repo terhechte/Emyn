@@ -8,6 +8,17 @@
 import SwiftUI
 
 struct ContentView: View {
+    private static let softwareCursorBaseSize: CGFloat = 32
+    private static let softwareCursorDefaultScale: CGFloat = 2
+    private static let softwareCursorHotspot = CGPoint(x: 2, y: 2)
+    private static let softwareCursorImage: NSImage? = {
+        if let url = Bundle.main.url(forResource: "cursor", withExtension: "png") {
+            return NSImage(contentsOf: url)
+        }
+
+        return NSImage(named: "cursor")
+    }()
+
     @StateObject private var pipeline = CameraPipeline()
     @StateObject private var extensionInstaller = SystemExtensionInstaller()
     @StateObject private var windowBackgroundPicker = WindowBackgroundPickerModel()
@@ -17,6 +28,8 @@ struct ContentView: View {
     @State private var isFunctionKeyConfigurationPresented = false
     @State private var selectedWindowBackgroundOption: WindowBackgroundOption?
     @State private var previewNSView: SampleBufferPreviewView?
+    @State private var cursorScale = Self.softwareCursorDefaultScale
+    @State private var cursorAttentionTask: Task<Void, Never>?
     @AppStorage("excludeFunctionKeysDuringWindowControl") private var excludeFunctionKeysDuringWindowControl = true
 
     var body: some View {
@@ -34,6 +47,7 @@ struct ContentView: View {
             functionKeys.startMonitoring()
         }
         .onDisappear {
+            cursorAttentionTask?.cancel()
             functionKeys.stopMonitoring()
             windowControl.deactivate()
             pipeline.stop()
@@ -326,18 +340,11 @@ struct ContentView: View {
             if windowControl.isActive, let cursor = windowControl.cursorNormalised {
                 GeometryReader { proxy in
                     let region = windowControl.cursorRegionNormalised
-                    Circle()
-                        .fill(.black.opacity(0.32))
-                        .overlay {
-                            Circle()
-                                .stroke(.white, lineWidth: 2)
-                        }
-                        .frame(width: 18, height: 18)
-                        .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
-                        .position(
-                            x: proxy.size.width * (region.minX + cursor.x * region.width),
-                            y: proxy.size.height * (region.minY + cursor.y * region.height)
-                        )
+                    let position = CGPoint(
+                        x: proxy.size.width * (region.minX + cursor.x * region.width),
+                        y: proxy.size.height * (region.minY + cursor.y * region.height)
+                    )
+                    softwareCursor(at: position)
                 }
                 .allowsHitTesting(false)
             }
@@ -352,6 +359,34 @@ struct ContentView: View {
             .background(.black.opacity(0.62), in: Capsule())
             .foregroundStyle(.white)
             .padding(14)
+        }
+    }
+
+    @ViewBuilder
+    private func softwareCursor(at position: CGPoint) -> some View {
+        let cursorSize = Self.softwareCursorBaseSize * cursorScale
+
+        if let cursorImage = Self.softwareCursorImage {
+            let imageScale = cursorSize / max(cursorImage.size.width, 1)
+            Image(nsImage: cursorImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: cursorSize, height: cursorSize)
+                .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                .position(
+                    x: position.x + cursorSize * 0.5 - Self.softwareCursorHotspot.x * imageScale,
+                    y: position.y + cursorSize * 0.5 - Self.softwareCursorHotspot.y * imageScale
+                )
+        } else {
+            Circle()
+                .fill(.black.opacity(0.32))
+                .overlay {
+                    Circle()
+                        .stroke(.white, lineWidth: 2)
+                }
+                .frame(width: 18 * cursorScale, height: 18 * cursorScale)
+                .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
+                .position(position)
         }
     }
 
@@ -465,6 +500,28 @@ struct ContentView: View {
             pipeline.toggleImageOverlay(identifier: identifier, imagePath: imagePath)
         case .toggleWindowZoom:
             pipeline.toggleWindowZoom()
+        case .drawAttentionToCursor:
+            drawAttentionToCursor()
+        }
+    }
+
+    private func drawAttentionToCursor() {
+        cursorAttentionTask?.cancel()
+        cursorScale = Self.softwareCursorDefaultScale
+
+        cursorAttentionTask = Task { @MainActor in
+            let scales: [CGFloat] = [4, 1, 3, 1.5, 2.5, Self.softwareCursorDefaultScale]
+            let stepDuration = 250_000_000
+
+            for scale in scales {
+                guard !Task.isCancelled else { return }
+
+                withAnimation(.spring(response: 0.18, dampingFraction: 0.46, blendDuration: 0)) {
+                    cursorScale = scale
+                }
+
+                try? await Task.sleep(nanoseconds: UInt64(stepDuration))
+            }
         }
     }
 }

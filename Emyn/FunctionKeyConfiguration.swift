@@ -71,6 +71,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
     case toggleWindowAndPerson
     case toggleImageOverlay
     case toggleWindowZoom
+    case drawAttentionToCursor
 
     var id: String { rawValue }
 
@@ -82,6 +83,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         case .toggleWindowAndPerson: return "Window + Person"
         case .toggleImageOverlay: return "Image"
         case .toggleWindowZoom: return "Zoom"
+        case .drawAttentionToCursor: return "Cursor"
         }
     }
 
@@ -93,6 +95,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         case .toggleWindowAndPerson: return "rectangle.on.rectangle"
         case .toggleImageOverlay: return "photo"
         case .toggleWindowZoom: return "plus.magnifyingglass"
+        case .drawAttentionToCursor: return "cursorarrow.rays"
         }
     }
 
@@ -101,7 +104,8 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
             .toggleWindowBackground,
             .togglePersonPosition,
             .toggleWindowZoom,
-            .toggleWindowAndPerson
+            .toggleWindowAndPerson,
+            .drawAttentionToCursor
         ]
     }
 
@@ -109,7 +113,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .toggleWindowBackground, .toggleWindowZoom, .toggleWindowAndPerson:
             return true
-        case .none, .togglePersonPosition, .toggleImageOverlay:
+        case .none, .togglePersonPosition, .toggleImageOverlay, .drawAttentionToCursor:
             return false
         }
     }
