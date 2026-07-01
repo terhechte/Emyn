@@ -299,6 +299,16 @@ struct ContentView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 10) {
+                Text("Output")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                outputFlipButtons
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
                 Button {
                     extensionInstaller.activate()
                 } label: {
@@ -340,9 +350,13 @@ struct ContentView: View {
             if windowControl.isActive, let cursor = windowControl.cursorNormalised {
                 GeometryReader { proxy in
                     let region = windowControl.cursorRegionNormalised
+                    let outputCursor = CGPoint(
+                        x: pipeline.outputFlipHorizontal ? 1 - cursor.x : cursor.x,
+                        y: pipeline.outputFlipVertical ? 1 - cursor.y : cursor.y
+                    )
                     let position = CGPoint(
-                        x: proxy.size.width * (region.minX + cursor.x * region.width),
-                        y: proxy.size.height * (region.minY + cursor.y * region.height)
+                        x: proxy.size.width * (region.minX + outputCursor.x * region.width),
+                        y: proxy.size.height * (region.minY + outputCursor.y * region.height)
                     )
                     softwareCursor(at: position)
                 }
@@ -388,6 +402,54 @@ struct ContentView: View {
                 .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
                 .position(position)
         }
+    }
+
+    private var outputFlipButtons: some View {
+        let columns = [
+            GridItem(.flexible(), spacing: 6),
+            GridItem(.flexible(), spacing: 6)
+        ]
+
+        return LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+            outputFlipButton(
+                title: "Horizontal",
+                systemImage: "arrow.left.and.right",
+                isActive: pipeline.outputFlipHorizontal
+            ) {
+                pipeline.outputFlipHorizontal.toggle()
+            }
+
+            outputFlipButton(
+                title: "Vertical",
+                systemImage: "arrow.up.and.down",
+                isActive: pipeline.outputFlipVertical
+            ) {
+                pipeline.outputFlipVertical.toggle()
+            }
+        }
+    }
+
+    private func outputFlipButton(
+        title: String,
+        systemImage: String,
+        isActive: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .foregroundStyle(isActive ? Color.accentColor : Color.primary)
+        .background(isActive ? Color.accentColor.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(isActive ? Color.accentColor.opacity(0.7) : Color.clear, lineWidth: 1)
+        }
+        .help(isActive ? "\(title) flip enabled" : "Flip output \(title.lowercased())")
     }
 
     private var cameraSelection: Binding<String> {

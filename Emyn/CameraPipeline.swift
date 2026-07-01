@@ -139,6 +139,8 @@ private struct ProcessingSettings {
     var backgroundMode: BackgroundMode = .replacement
     var backgroundBlurRadius: Double = 18
     var background: BackgroundPreset = .black
+    var outputFlipHorizontal = false
+    var outputFlipVertical = false
     var presentationEffects = PresentationEffects()
 }
 
@@ -298,6 +300,14 @@ final class CameraPipeline: NSObject, ObservableObject {
 
     @Published var backgroundPreset: BackgroundPreset = .black {
         didSet { updateSettings { $0.background = self.backgroundPreset } }
+    }
+
+    @Published var outputFlipHorizontal = false {
+        didSet { updateSettings { $0.outputFlipHorizontal = self.outputFlipHorizontal } }
+    }
+
+    @Published var outputFlipVertical = false {
+        didSet { updateSettings { $0.outputFlipVertical = self.outputFlipVertical } }
     }
 
     @Published private(set) var isRunning = false
@@ -685,6 +695,12 @@ final class CameraPipeline: NSObject, ObservableObject {
             over: renderedImage,
             outputExtent: outputExtent
         )
+        renderedImage = applyOutputFlips(
+            to: renderedImage,
+            outputExtent: outputExtent,
+            horizontal: settings.outputFlipHorizontal,
+            vertical: settings.outputFlipVertical
+        )
 
         ciContext.render(
             renderedImage,
@@ -886,6 +902,31 @@ final class CameraPipeline: NSObject, ObservableObject {
                 .composited(over: currentImage)
                 .cropped(to: outputExtent)
         }
+    }
+
+    private func applyOutputFlips(
+        to image: CIImage,
+        outputExtent: CGRect,
+        horizontal: Bool,
+        vertical: Bool
+    ) -> CIImage {
+        let croppedImage = image.cropped(to: outputExtent)
+        guard horizontal || vertical else {
+            return croppedImage
+        }
+
+        let transform = CGAffineTransform(
+            translationX: horizontal ? outputExtent.width : 0,
+            y: vertical ? outputExtent.height : 0
+        )
+        .scaledBy(
+            x: horizontal ? -1 : 1,
+            y: vertical ? -1 : 1
+        )
+
+        return croppedImage
+            .transformed(by: transform)
+            .cropped(to: outputExtent)
     }
 
     private func cachedOverlayImage(for imagePath: String) -> CIImage? {

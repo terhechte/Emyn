@@ -207,6 +207,20 @@ If Finder says `The application "Emyn.app" can't be opened`, inspect launch-time
 
 `No matching profile found` means the app was signed with restricted entitlements but the matching embedded provisioning profile is missing, is for the wrong bundle ID, is for the wrong team, or does not contain the signing certificate.
 
+If ScreenCaptureKit reports that the user declined TCCs even though System Settings shows Emyn enabled under Screen & System Audio Recording, reset the stale TCC row for the bundle identifier:
+
+```bash
+tccutil reset ScreenCapture com.stylemac.Emyn
+```
+
+Then quit Emyn, reopen `/Applications/Emyn.app`, trigger the window picker again, approve the system prompt, and relaunch Emyn once more. This can happen after switching from a development-signed build to a Developer ID notarized build because macOS may keep a visible permission row whose stored code requirement no longer matches the app's current signature.
+
+If the targeted reset does not clear the stale state, reset the full screen-capture service and re-grant access to the apps that need it:
+
+```bash
+tccutil reset ScreenCapture
+```
+
 ## Apple References
 
 - [Developer ID support](https://developer.apple.com/support/developer-id/)
