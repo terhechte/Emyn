@@ -6,20 +6,87 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		4D1E00032FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = 4D1E00012FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		4D1E00042FF5000000E2BC47 /* SharedFrameStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D1E00052FF5000000E2BC47 /* SharedFrameStore.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		4D1E000C2FF5000000E2BC47 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4D3915A62FF4F92200E2BC47 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 4D1E00072FF5000000E2BC47;
+			remoteInfo = EmynVirtualCameraExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		4D1E00062FF5000000E2BC47 /* Embed System Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Library/SystemExtensions";
+			dstSubfolderSpec = 16;
+			files = (
+				4D1E00032FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension in Embed System Extensions */,
+			);
+			name = "Embed System Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		4D3915AE2FF4F92200E2BC47 /* Emyn.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Emyn.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4D1E00012FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = EmynVirtualCameraExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
+		4D1E00052FF5000000E2BC47 /* SharedFrameStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Emyn/SharedFrameStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		4D1E00102FF5000000E2BC47 /* Exceptions for "Emyn" folder in "Emyn" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Emyn.entitlements,
+			);
+			target = 4D3915AD2FF4F92200E2BC47 /* Emyn */;
+		};
+		4D1E00112FF5000000E2BC47 /* Exceptions for "EmynVirtualCameraExtension" folder in "EmynVirtualCameraExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				EmynVirtualCameraExtension.entitlements,
+				Info.plist,
+			);
+			target = 4D1E00072FF5000000E2BC47 /* EmynVirtualCameraExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		4D3915B02FF4F92200E2BC47 /* Emyn */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				4D1E00102FF5000000E2BC47 /* Exceptions for "Emyn" folder in "Emyn" target */,
+			);
 			path = Emyn;
+			sourceTree = "<group>";
+		};
+		4D1E00022FF5000000E2BC47 /* EmynVirtualCameraExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				4D1E00112FF5000000E2BC47 /* Exceptions for "EmynVirtualCameraExtension" folder in "EmynVirtualCameraExtension" target */,
+			);
+			path = EmynVirtualCameraExtension;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		4D3915AB2FF4F92200E2BC47 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4D1E00092FF5000000E2BC47 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +100,7 @@
 			isa = PBXGroup;
 			children = (
 				4D3915B02FF4F92200E2BC47 /* Emyn */,
+				4D1E00022FF5000000E2BC47 /* EmynVirtualCameraExtension */,
 				4D3915AF2FF4F92200E2BC47 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +109,7 @@
 			isa = PBXGroup;
 			children = (
 				4D3915AE2FF4F92200E2BC47 /* Emyn.app */,
+				4D1E00012FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -55,10 +124,12 @@
 				4D3915AA2FF4F92200E2BC47 /* Sources */,
 				4D3915AB2FF4F92200E2BC47 /* Frameworks */,
 				4D3915AC2FF4F92200E2BC47 /* Resources */,
+				4D1E00062FF5000000E2BC47 /* Embed System Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				4D1E000B2FF5000000E2BC47 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				4D3915B02FF4F92200E2BC47 /* Emyn */,
@@ -69,6 +140,28 @@
 			productName = Emyn;
 			productReference = 4D3915AE2FF4F92200E2BC47 /* Emyn.app */;
 			productType = "com.apple.product-type.application";
+		};
+		4D1E00072FF5000000E2BC47 /* EmynVirtualCameraExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4D1E000F2FF5000000E2BC47 /* Build configuration list for PBXNativeTarget "EmynVirtualCameraExtension" */;
+			buildPhases = (
+				4D1E00082FF5000000E2BC47 /* Sources */,
+				4D1E00092FF5000000E2BC47 /* Frameworks */,
+				4D1E000A2FF5000000E2BC47 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				4D1E00022FF5000000E2BC47 /* EmynVirtualCameraExtension */,
+			);
+			name = EmynVirtualCameraExtension;
+			packageProductDependencies = (
+			);
+			productName = EmynVirtualCameraExtension;
+			productReference = 4D1E00012FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension */;
+			productType = "com.apple.product-type.system-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -81,6 +174,9 @@
 				LastUpgradeCheck = 2610;
 				TargetAttributes = {
 					4D3915AD2FF4F92200E2BC47 = {
+						CreatedOnToolsVersion = 26.1.1;
+					};
+					4D1E00072FF5000000E2BC47 = {
 						CreatedOnToolsVersion = 26.1.1;
 					};
 				};
@@ -100,12 +196,20 @@
 			projectRoot = "";
 			targets = (
 				4D3915AD2FF4F92200E2BC47 /* Emyn */,
+				4D1E00072FF5000000E2BC47 /* EmynVirtualCameraExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		4D3915AC2FF4F92200E2BC47 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4D1E000A2FF5000000E2BC47 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +226,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		4D1E00082FF5000000E2BC47 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4D1E00042FF5000000E2BC47 /* SharedFrameStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		4D1E000B2FF5000000E2BC47 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 4D1E00072FF5000000E2BC47 /* EmynVirtualCameraExtension */;
+			targetProxy = 4D1E000C2FF5000000E2BC47 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		4D3915B72FF4F92300E2BC47 /* Debug */ = {
@@ -250,6 +370,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Emyn/Emyn.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -259,7 +380,11 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Emyn uses the selected camera to create the processed video feed.";
+				INFOPLIST_KEY_NSCameraUseContinuityCameraDeviceType = YES;
+				INFOPLIST_KEY_NSCameraUseExternalDeviceType = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSSystemExtensionUsageDescription = "Emyn installs a virtual camera that makes the processed feed available to video conferencing apps.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -270,7 +395,7 @@
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
@@ -282,6 +407,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Emyn/Emyn.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -291,7 +417,11 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Emyn uses the selected camera to create the processed video feed.";
+				INFOPLIST_KEY_NSCameraUseContinuityCameraDeviceType = YES;
+				INFOPLIST_KEY_NSCameraUseExternalDeviceType = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSSystemExtensionUsageDescription = "Emyn installs a virtual camera that makes the processed feed available to video conferencing apps.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -302,7 +432,69 @@
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		4D1E000D2FF5000000E2BC47 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = EmynVirtualCameraExtension/EmynVirtualCameraExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 76VT9VZ6GK;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = EmynVirtualCameraExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.stylemac.Emyn.VirtualCameraExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		4D1E000E2FF5000000E2BC47 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = EmynVirtualCameraExtension/EmynVirtualCameraExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 76VT9VZ6GK;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = EmynVirtualCameraExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.stylemac.Emyn.VirtualCameraExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
@@ -326,6 +518,15 @@
 			buildConfigurations = (
 				4D3915BA2FF4F92300E2BC47 /* Debug */,
 				4D3915BB2FF4F92300E2BC47 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		4D1E000F2FF5000000E2BC47 /* Build configuration list for PBXNativeTarget "EmynVirtualCameraExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4D1E000D2FF5000000E2BC47 /* Debug */,
+				4D1E000E2FF5000000E2BC47 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

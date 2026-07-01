@@ -13,5 +13,6 @@ struct EmynApp: App {
         WindowGroup {
             ContentView()
         }
+        .windowResizability(.contentSize)
     }
 }

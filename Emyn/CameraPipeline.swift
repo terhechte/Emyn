@@ -1,0 +1,604 @@
+import AppKit
+import AVFoundation
+import Combine
+import CoreImage
+import CoreMedia
+import CoreVideo
+import Foundation
+import Metal
+import QuartzCore
+import Vision
+
+struct CameraDeviceInfo: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let detail: String
+}
+
+enum SegmentationQuality: String, CaseIterable, Identifiable {
+    case fast
+    case balanced
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fast: return "Fast"
+        case .balanced: return "Balanced"
+        }
+    }
+
+    var visionQualityLevel: VNGeneratePersonSegmentationRequest.QualityLevel {
+        switch self {
+        case .fast: return .fast
+        case .balanced: return .balanced
+        }
+    }
+}
+
+enum BackgroundPreset: String, CaseIterable, Identifiable {
+    case black
+    case white
+    case green
+    case blue
+    case transparent
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .black: return "Black"
+        case .white: return "White"
+        case .green: return "Green"
+        case .blue: return "Blue"
+        case .transparent: return "Transparent"
+        }
+    }
+
+    var rgba: (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
+        switch self {
+        case .black:
+            return (0.02, 0.02, 0.025, 1.0)
+        case .white:
+            return (0.92, 0.93, 0.94, 1.0)
+        case .green:
+            return (0.0, 0.75, 0.32, 1.0)
+        case .blue:
+            return (0.05, 0.18, 0.62, 1.0)
+        case .transparent:
+            return (0.0, 0.0, 0.0, 0.0)
+        }
+    }
+
+    var nsColor: NSColor {
+        let value = rgba
+        return NSColor(
+            calibratedRed: value.red,
+            green: value.green,
+            blue: value.blue,
+            alpha: max(value.alpha, 0.18)
+        )
+    }
+}
+
+private struct ProcessingSettings {
+    var quality: SegmentationQuality = .balanced
+    var temporalSmoothing: Double = 0.72
+    var maskReuseFrameCount: Int = 2
+    var background: BackgroundPreset = .black
+}
+
+final class CameraPipeline: NSObject, ObservableObject {
+    @Published private(set) var cameras: [CameraDeviceInfo] = []
+    @Published var selectedCameraID: String = "" {
+        didSet {
+            guard oldValue != selectedCameraID, isRunning else { return }
+            restart()
+        }
+    }
+
+    @Published var quality: SegmentationQuality = .balanced {
+        didSet {
+            updateSettings { $0.quality = self.quality }
+            segmentationQueue.async { [quality] in
+                self.segmentationRequest.qualityLevel = quality.visionQualityLevel
+            }
+        }
+    }
+
+    @Published var temporalSmoothing: Double = 0.72 {
+        didSet { updateSettings { $0.temporalSmoothing = self.temporalSmoothing } }
+    }
+
+    @Published var maskReuseFrameCount: Int = 2 {
+        didSet { updateSettings { $0.maskReuseFrameCount = self.maskReuseFrameCount } }
+    }
+
+    @Published var backgroundPreset: BackgroundPreset = .black {
+        didSet { updateSettings { $0.background = self.backgroundPreset } }
+    }
+
+    @Published private(set) var isRunning = false
+    @Published private(set) var statusText = "Idle"
+    @Published private(set) var measuredFramesPerSecond: Double = 0
+
+    var previewHandler: ((CMSampleBuffer) -> Void)?
+
+    private let captureSession = AVCaptureSession()
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private let captureQueue = DispatchQueue(label: "com.stylemac.Emyn.capture", qos: .userInitiated)
+    private let segmentationQueue = DispatchQueue(label: "com.stylemac.Emyn.segmentation", qos: .userInitiated)
+    private let renderQueue = DispatchQueue(label: "com.stylemac.Emyn.render", qos: .userInteractive)
+    private let settingsQueue = DispatchQueue(label: "com.stylemac.Emyn.settings")
+    private let maskLock = NSLock()
+    private let renderLock = NSLock()
+    private let segmentationStateLock = NSLock()
+
+    private let ciContext: CIContext
+    private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
+    private let segmentationRequest = VNGeneratePersonSegmentationRequest()
+    private let frameWriter: SharedFrameWriter?
+
+    private var settings = ProcessingSettings()
+    private var latestMask: CIImage?
+    private var outputPixelBufferPool: CVPixelBufferPool?
+    private var analysisPixelBufferPool: CVPixelBufferPool?
+    private var outputFormatDescription: CMFormatDescription?
+    private var frameCounter: UInt64 = 0
+    private var segmentationInFlight = false
+    private var renderInFlight = false
+    private var renderedFrameCounter = 0
+    private var lastFPSUpdate = CACurrentMediaTime()
+
+    override init() {
+        if let metalDevice = MTLCreateSystemDefaultDevice() {
+            ciContext = CIContext(
+                mtlDevice: metalDevice,
+                options: [.cacheIntermediates: false]
+            )
+        } else {
+            ciContext = CIContext(options: [.cacheIntermediates: false])
+        }
+
+        frameWriter = try? SharedFrameWriter()
+
+        super.init()
+
+        segmentationRequest.qualityLevel = quality.visionQualityLevel
+        segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        outputPixelBufferPool = Self.makePixelBufferPool(
+            width: SharedFrameConfiguration.width,
+            height: SharedFrameConfiguration.height,
+            pixelFormat: SharedFrameConfiguration.pixelFormat
+        )
+        analysisPixelBufferPool = Self.makePixelBufferPool(width: 384, height: 216, pixelFormat: kCVPixelFormatType_32BGRA)
+
+        CMVideoFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            codecType: SharedFrameConfiguration.pixelFormat,
+            width: Int32(SharedFrameConfiguration.width),
+            height: Int32(SharedFrameConfiguration.height),
+            extensions: nil,
+            formatDescriptionOut: &outputFormatDescription
+        )
+
+        refreshCameras()
+        if frameWriter == nil {
+            statusText = "Shared frame output unavailable"
+        }
+    }
+
+    func refreshCameras() {
+        let devices = Self.discoverCameraDevices()
+        let infos = devices.map {
+            CameraDeviceInfo(id: $0.uniqueID, name: $0.localizedName, detail: $0.deviceType.rawValue)
+        }
+
+        DispatchQueue.main.async {
+            self.cameras = infos
+            if self.selectedCameraID.isEmpty || !infos.contains(where: { $0.id == self.selectedCameraID }) {
+                self.selectedCameraID = infos.first?.id ?? ""
+            }
+        }
+    }
+
+    func start() {
+        refreshCameras()
+
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            configureAndStartCapture()
+        case .notDetermined:
+            setStatus("Waiting for camera access")
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard let self else { return }
+                if granted {
+                    self.configureAndStartCapture()
+                } else {
+                    self.setStatus("Camera access denied")
+                }
+            }
+        case .denied, .restricted:
+            setStatus("Camera access denied")
+        @unknown default:
+            setStatus("Camera access unavailable")
+        }
+    }
+
+    func stop() {
+        captureQueue.async {
+            self.captureSession.stopRunning()
+            self.captureSession.beginConfiguration()
+            self.captureSession.inputs.forEach { self.captureSession.removeInput($0) }
+            self.captureSession.outputs.forEach { self.captureSession.removeOutput($0) }
+            self.captureSession.commitConfiguration()
+
+            DispatchQueue.main.async {
+                self.isRunning = false
+                self.statusText = "Stopped"
+            }
+        }
+    }
+
+    func restart() {
+        stop()
+        captureQueue.asyncAfter(deadline: .now() + 0.25) {
+            self.configureAndStartCapture()
+        }
+    }
+
+    private func configureAndStartCapture() {
+        let cameraID = selectedCameraID
+        captureQueue.async {
+            guard let device = Self.discoverCameraDevices().first(where: { $0.uniqueID == cameraID })
+                    ?? Self.discoverCameraDevices().first else {
+                self.setStatus("No camera found")
+                return
+            }
+
+            do {
+                self.captureSession.beginConfiguration()
+                self.captureSession.sessionPreset = .hd1280x720
+                self.captureSession.inputs.forEach { self.captureSession.removeInput($0) }
+                self.captureSession.outputs.forEach { self.captureSession.removeOutput($0) }
+
+                let input = try AVCaptureDeviceInput(device: device)
+                guard self.captureSession.canAddInput(input) else {
+                    self.captureSession.commitConfiguration()
+                    self.setStatus("Camera input unavailable")
+                    return
+                }
+
+                self.captureSession.addInput(input)
+                self.videoOutput.alwaysDiscardsLateVideoFrames = true
+                self.videoOutput.videoSettings = [
+                    kCVPixelBufferPixelFormatTypeKey as String: SharedFrameConfiguration.pixelFormat
+                ]
+                self.videoOutput.setSampleBufferDelegate(self, queue: self.captureQueue)
+
+                guard self.captureSession.canAddOutput(self.videoOutput) else {
+                    self.captureSession.commitConfiguration()
+                    self.setStatus("Video output unavailable")
+                    return
+                }
+
+                self.captureSession.addOutput(self.videoOutput)
+                self.captureSession.commitConfiguration()
+                self.captureSession.startRunning()
+
+                self.clearMask()
+                DispatchQueue.main.async {
+                    self.isRunning = true
+                    self.statusText = "Running"
+                }
+            } catch {
+                self.captureSession.commitConfiguration()
+                self.setStatus(error.localizedDescription)
+            }
+        }
+    }
+
+    private static func discoverCameraDevices() -> [AVCaptureDevice] {
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera, .deskViewCamera],
+            mediaType: .video,
+            position: .unspecified
+        )
+
+        return discovery.devices.filter { $0.localizedName != SharedFrameConfiguration.virtualCameraName }
+    }
+
+    private func scheduleSegmentation(for pixelBuffer: CVPixelBuffer) {
+        guard beginSegmentationIfPossible() else { return }
+
+        segmentationQueue.async {
+            defer { self.finishSegmentation() }
+            self.performSegmentation(on: pixelBuffer)
+        }
+    }
+
+    private func performSegmentation(on pixelBuffer: CVPixelBuffer) {
+        guard let analysisPixelBuffer = makeAnalysisPixelBuffer() else {
+            return
+        }
+
+        let analysisSize = CGSize(width: 384, height: 216)
+        let analysisImage = aspectFillImage(from: pixelBuffer, targetSize: analysisSize)
+        ciContext.render(
+            analysisImage,
+            to: analysisPixelBuffer,
+            bounds: CGRect(origin: .zero, size: analysisSize),
+            colorSpace: colorSpace
+        )
+
+        do {
+            let handler = VNImageRequestHandler(cvPixelBuffer: analysisPixelBuffer, orientation: .up)
+            try handler.perform([segmentationRequest])
+            guard let maskPixelBuffer = segmentationRequest.results?.first?.pixelBuffer else {
+                return
+            }
+
+            var newMask = CIImage(cvPixelBuffer: maskPixelBuffer)
+            newMask = normalizeExtent(newMask)
+
+            let settings = currentSettings()
+            if let previousMask = currentMask(), previousMask.extent.size == newMask.extent.size {
+                let newWeight = max(0.08, min(1.0, 1.0 - settings.temporalSmoothing))
+                newMask = newMask.applyingFilter("CIMix", parameters: [
+                    kCIInputBackgroundImageKey: previousMask,
+                    kCIInputAmountKey: newWeight
+                ])
+            }
+
+            setCurrentMask(newMask)
+        } catch {
+            setStatus(error.localizedDescription)
+        }
+    }
+
+    private func scheduleRender(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
+        renderLock.lock()
+        guard !renderInFlight else {
+            renderLock.unlock()
+            return
+        }
+        renderInFlight = true
+        renderLock.unlock()
+
+        renderQueue.async {
+            self.render(pixelBuffer: pixelBuffer, timestamp: timestamp)
+            self.renderLock.lock()
+            self.renderInFlight = false
+            self.renderLock.unlock()
+        }
+    }
+
+    private func render(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
+        guard let outputPixelBuffer = makeOutputPixelBuffer() else {
+            return
+        }
+
+        let outputSize = CGSize(
+            width: SharedFrameConfiguration.width,
+            height: SharedFrameConfiguration.height
+        )
+        let outputExtent = CGRect(origin: .zero, size: outputSize)
+        let foreground = aspectFillImage(from: pixelBuffer, targetSize: outputSize)
+        let settings = currentSettings()
+
+        let renderedImage: CIImage
+        if let mask = currentMask() {
+            let upscaledMask = upscale(mask: mask, to: outputExtent)
+            let color = settings.background.rgba
+            let background = CIImage(color: CIColor(
+                red: color.red,
+                green: color.green,
+                blue: color.blue,
+                alpha: color.alpha
+            ))
+            .cropped(to: outputExtent)
+
+            renderedImage = foreground.applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputBackgroundImageKey: background,
+                kCIInputMaskImageKey: upscaledMask
+            ])
+            .cropped(to: outputExtent)
+        } else {
+            renderedImage = foreground.cropped(to: outputExtent)
+        }
+
+        ciContext.render(
+            renderedImage,
+            to: outputPixelBuffer,
+            bounds: outputExtent,
+            colorSpace: colorSpace
+        )
+
+        frameWriter?.publish(pixelBuffer: outputPixelBuffer, presentationTime: timestamp)
+        if let sampleBuffer = makeSampleBuffer(from: outputPixelBuffer, timestamp: timestamp) {
+            DispatchQueue.main.async {
+                self.previewHandler?(sampleBuffer)
+            }
+        }
+        updateMeasuredFPS()
+    }
+
+    private func aspectFillImage(from pixelBuffer: CVPixelBuffer, targetSize: CGSize) -> CIImage {
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        let extent = image.extent
+        let scale = max(targetSize.width / extent.width, targetSize.height / extent.height)
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let crop = CGRect(
+            x: (scaled.extent.width - targetSize.width) * 0.5,
+            y: (scaled.extent.height - targetSize.height) * 0.5,
+            width: targetSize.width,
+            height: targetSize.height
+        )
+
+        return scaled
+            .cropped(to: crop)
+            .transformed(by: CGAffineTransform(translationX: -crop.origin.x, y: -crop.origin.y))
+    }
+
+    private func upscale(mask: CIImage, to extent: CGRect) -> CIImage {
+        let normalizedMask = normalizeExtent(mask)
+        let scaleX = extent.width / normalizedMask.extent.width
+        let scaleY = extent.height / normalizedMask.extent.height
+
+        return normalizedMask
+            .transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 1.25])
+            .cropped(to: extent)
+    }
+
+    private func normalizeExtent(_ image: CIImage) -> CIImage {
+        image.transformed(by: CGAffineTransform(
+            translationX: -image.extent.origin.x,
+            y: -image.extent.origin.y
+        ))
+    }
+
+    private func makeOutputPixelBuffer() -> CVPixelBuffer? {
+        guard let outputPixelBufferPool else { return nil }
+        var pixelBuffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, outputPixelBufferPool, &pixelBuffer)
+        return pixelBuffer
+    }
+
+    private func makeAnalysisPixelBuffer() -> CVPixelBuffer? {
+        guard let analysisPixelBufferPool else { return nil }
+        var pixelBuffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, analysisPixelBufferPool, &pixelBuffer)
+        return pixelBuffer
+    }
+
+    private func makeSampleBuffer(from pixelBuffer: CVPixelBuffer, timestamp: CMTime) -> CMSampleBuffer? {
+        guard let outputFormatDescription else { return nil }
+
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: 30),
+            presentationTimeStamp: timestamp.isValid ? timestamp : CMClockGetTime(CMClockGetHostTimeClock()),
+            decodeTimeStamp: .invalid
+        )
+        var sampleBuffer: CMSampleBuffer?
+        CMSampleBufferCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: pixelBuffer,
+            dataReady: true,
+            makeDataReadyCallback: nil,
+            refcon: nil,
+            formatDescription: outputFormatDescription,
+            sampleTiming: &timing,
+            sampleBufferOut: &sampleBuffer
+        )
+        return sampleBuffer
+    }
+
+    private static func makePixelBufferPool(width: Int, height: Int, pixelFormat: OSType) -> CVPixelBufferPool? {
+        let attributes: [String: Any] = [
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+            kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ]
+
+        var pool: CVPixelBufferPool?
+        CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pool)
+        return pool
+    }
+
+    private func currentSettings() -> ProcessingSettings {
+        settingsQueue.sync { settings }
+    }
+
+    private func updateSettings(_ update: @escaping (inout ProcessingSettings) -> Void) {
+        settingsQueue.async {
+            update(&self.settings)
+        }
+    }
+
+    private func currentMask() -> CIImage? {
+        maskLock.lock()
+        defer { maskLock.unlock() }
+        return latestMask
+    }
+
+    private func setCurrentMask(_ mask: CIImage) {
+        maskLock.lock()
+        latestMask = mask
+        maskLock.unlock()
+    }
+
+    private func clearMask() {
+        maskLock.lock()
+        latestMask = nil
+        maskLock.unlock()
+    }
+
+    private func beginSegmentationIfPossible() -> Bool {
+        segmentationStateLock.lock()
+        defer { segmentationStateLock.unlock() }
+
+        guard !segmentationInFlight else {
+            return false
+        }
+
+        segmentationInFlight = true
+        return true
+    }
+
+    private func finishSegmentation() {
+        segmentationStateLock.lock()
+        segmentationInFlight = false
+        segmentationStateLock.unlock()
+    }
+
+    private func setStatus(_ status: String) {
+        DispatchQueue.main.async {
+            self.statusText = status
+        }
+    }
+
+    private func updateMeasuredFPS() {
+        renderedFrameCounter += 1
+        let now = CACurrentMediaTime()
+        guard now - lastFPSUpdate >= 1 else { return }
+
+        let fps = Double(renderedFrameCounter) / (now - lastFPSUpdate)
+        renderedFrameCounter = 0
+        lastFPSUpdate = now
+
+        DispatchQueue.main.async {
+            self.measuredFramesPerSecond = fps
+        }
+    }
+}
+
+extension CameraPipeline: AVCaptureVideoDataOutputSampleBufferDelegate {
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            return
+        }
+
+        frameCounter += 1
+        let settings = currentSettings()
+        let shouldRefreshMask = currentMask() == nil
+            || frameCounter.isMultiple(of: UInt64(max(1, settings.maskReuseFrameCount + 1)))
+
+        if shouldRefreshMask {
+            scheduleSegmentation(for: pixelBuffer)
+        }
+
+        scheduleRender(
+            pixelBuffer: pixelBuffer,
+            timestamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        )
+    }
+}
