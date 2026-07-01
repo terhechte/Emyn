@@ -10,6 +10,11 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var pipeline = CameraPipeline()
     @StateObject private var extensionInstaller = SystemExtensionInstaller()
+    @StateObject private var windowBackgroundPicker = WindowBackgroundPickerModel()
+    @StateObject private var windowControl = WindowControlCoordinator()
+    @State private var isWindowBackgroundPickerPresented = false
+    @State private var selectedWindowBackgroundOption: WindowBackgroundOption?
+    @State private var previewNSView: SampleBufferPreviewView?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -24,7 +29,23 @@ struct ContentView: View {
             pipeline.start()
         }
         .onDisappear {
+            windowControl.deactivate()
             pipeline.stop()
+            pipeline.clearWindowBackground()
+        }
+        .sheet(isPresented: $isWindowBackgroundPickerPresented) {
+            WindowBackgroundPickerView(
+                model: windowBackgroundPicker,
+                onSelect: { option in
+                    windowControl.deactivate()
+                    selectedWindowBackgroundOption = option
+                    pipeline.selectWindowBackground(option)
+                    isWindowBackgroundPickerPresented = false
+                },
+                onCancel: {
+                    isWindowBackgroundPickerPresented = false
+                }
+            )
         }
     }
 
@@ -131,6 +152,49 @@ struct ContentView: View {
                             .help(preset.title)
                         }
                     }
+
+                    HStack(spacing: 8) {
+                        Button {
+                            windowBackgroundPicker.refresh()
+                            isWindowBackgroundPickerPresented = true
+                        } label: {
+                            Label("Choose Window", systemImage: "rectangle.on.rectangle")
+                        }
+                        .controlSize(.small)
+
+                        if pipeline.selectedWindowBackgroundTitle != nil {
+                            Button {
+                                clearSelectedWindowBackground()
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                            }
+                            .controlSize(.small)
+                            .help("Clear window background")
+                        }
+                    }
+
+                    Text(pipeline.selectedWindowBackgroundTitle ?? pipeline.windowBackgroundStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+
+                    if pipeline.selectedWindowBackgroundTitle != nil, let selectedWindowBackgroundOption {
+                        Button {
+                            toggleWindowControl(for: selectedWindowBackgroundOption)
+                        } label: {
+                            Label(
+                                windowControl.isActive ? "Stop Control" : "Control Window",
+                                systemImage: windowControl.isActive ? "xmark.circle" : "cursorarrow"
+                            )
+                        }
+                        .controlSize(.small)
+                        .disabled(previewNSView == nil)
+
+                        Text(windowControl.statusText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                 }
             }
 
@@ -163,8 +227,35 @@ struct ContentView: View {
 
     private var preview: some View {
         ZStack(alignment: .bottomLeading) {
-            VideoPreviewView(pipeline: pipeline)
+            VideoPreviewView(
+                pipeline: pipeline,
+                onViewReady: { view in
+                    DispatchQueue.main.async {
+                        if previewNSView !== view {
+                            previewNSView = view
+                        }
+                    }
+                }
+            )
                 .background(.black)
+
+            if windowControl.isActive, let cursor = windowControl.cursorNormalised {
+                GeometryReader { proxy in
+                    Circle()
+                        .fill(.black.opacity(0.32))
+                        .overlay {
+                            Circle()
+                                .stroke(.white, lineWidth: 2)
+                        }
+                        .frame(width: 18, height: 18)
+                        .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
+                        .position(
+                            x: proxy.size.width * cursor.x,
+                            y: proxy.size.height * cursor.y
+                        )
+                }
+                .allowsHitTesting(false)
+            }
 
             HStack(spacing: 10) {
                 Label("\(pipeline.measuredFramesPerSecond, specifier: "%.0f") fps", systemImage: "speedometer")
@@ -185,6 +276,20 @@ struct ContentView: View {
         } set: { newValue in
             pipeline.selectedCameraID = newValue
         }
+    }
+
+    private func toggleWindowControl(for option: WindowBackgroundOption) {
+        if windowControl.isActive {
+            windowControl.deactivate()
+        } else {
+            windowControl.activate(option: option, mappedTo: previewNSView)
+        }
+    }
+
+    private func clearSelectedWindowBackground() {
+        windowControl.deactivate()
+        selectedWindowBackgroundOption = nil
+        pipeline.clearWindowBackground()
     }
 }
 

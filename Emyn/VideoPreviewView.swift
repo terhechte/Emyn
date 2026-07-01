@@ -32,12 +32,14 @@ final class SampleBufferPreviewView: NSView {
 
 struct VideoPreviewView: NSViewRepresentable {
     @ObservedObject var pipeline: CameraPipeline
+    var onViewReady: ((SampleBufferPreviewView) -> Void)?
 
     func makeNSView(context: Context) -> SampleBufferPreviewView {
         let view = SampleBufferPreviewView()
         pipeline.previewHandler = { [weak view] sampleBuffer in
             view?.enqueue(sampleBuffer)
         }
+        onViewReady?(view)
         return view
     }
 
@@ -45,6 +47,7 @@ struct VideoPreviewView: NSViewRepresentable {
         pipeline.previewHandler = { [weak nsView] sampleBuffer in
             nsView?.enqueue(sampleBuffer)
         }
+        onViewReady?(nsView)
     }
 
     static func dismantleNSView(_ nsView: SampleBufferPreviewView, coordinator: ()) {

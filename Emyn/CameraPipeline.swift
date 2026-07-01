@@ -7,6 +7,7 @@ import CoreVideo
 import Foundation
 import Metal
 import QuartzCore
+import ScreenCaptureKit
 import Vision
 
 struct CameraDeviceInfo: Identifiable, Equatable {
@@ -121,6 +122,8 @@ final class CameraPipeline: NSObject, ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var statusText = "Idle"
     @Published private(set) var measuredFramesPerSecond: Double = 0
+    @Published private(set) var selectedWindowBackgroundTitle: String?
+    @Published private(set) var windowBackgroundStatusText = "Color background"
 
     var previewHandler: ((CMSampleBuffer) -> Void)?
 
@@ -130,14 +133,17 @@ final class CameraPipeline: NSObject, ObservableObject {
     private let segmentationQueue = DispatchQueue(label: "com.stylemac.Emyn.segmentation", qos: .userInitiated)
     private let renderQueue = DispatchQueue(label: "com.stylemac.Emyn.render", qos: .userInteractive)
     private let settingsQueue = DispatchQueue(label: "com.stylemac.Emyn.settings")
+    private let screenCaptureQueue = DispatchQueue(label: "com.stylemac.Emyn.screen-capture", qos: .userInitiated)
     private let maskLock = NSLock()
     private let renderLock = NSLock()
     private let segmentationStateLock = NSLock()
+    private let backgroundLock = NSLock()
 
     private let ciContext: CIContext
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
     private let segmentationRequest = VNGeneratePersonSegmentationRequest()
     private let frameWriter: SharedFrameWriter?
+    private static let screenCaptureBackgroundColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
 
     private var settings = ProcessingSettings()
     private var latestMask: CIImage?
@@ -149,6 +155,8 @@ final class CameraPipeline: NSObject, ObservableObject {
     private var renderInFlight = false
     private var renderedFrameCounter = 0
     private var lastFPSUpdate = CACurrentMediaTime()
+    private var windowBackgroundStream: SCStream?
+    private var latestWindowBackgroundPixelBuffer: CVPixelBuffer?
 
     override init() {
         if let metalDevice = MTLCreateSystemDefaultDevice() {
@@ -237,6 +245,22 @@ final class CameraPipeline: NSObject, ObservableObject {
                 self.isRunning = false
                 self.statusText = "Stopped"
             }
+        }
+    }
+
+    func selectWindowBackground(_ option: WindowBackgroundOption) {
+        selectedWindowBackgroundTitle = option.displayTitle
+        windowBackgroundStatusText = "Starting window background"
+        startWindowBackgroundCapture(window: option.window, title: option.displayTitle)
+    }
+
+    func clearWindowBackground() {
+        selectedWindowBackgroundTitle = nil
+        windowBackgroundStatusText = "Color background"
+        clearLatestWindowBackgroundPixelBuffer()
+
+        screenCaptureQueue.async {
+            self.stopWindowBackgroundStream()
         }
     }
 
@@ -389,14 +413,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         let renderedImage: CIImage
         if let mask = currentMask() {
             let upscaledMask = upscale(mask: mask, to: outputExtent)
-            let color = settings.background.rgba
-            let background = CIImage(color: CIColor(
-                red: color.red,
-                green: color.green,
-                blue: color.blue,
-                alpha: color.alpha
-            ))
-            .cropped(to: outputExtent)
+            let background = backgroundImage(settings: settings, outputExtent: outputExtent)
 
             renderedImage = foreground.applyingFilter("CIBlendWithMask", parameters: [
                 kCIInputBackgroundImageKey: background,
@@ -438,6 +455,22 @@ final class CameraPipeline: NSObject, ObservableObject {
         return scaled
             .cropped(to: crop)
             .transformed(by: CGAffineTransform(translationX: -crop.origin.x, y: -crop.origin.y))
+    }
+
+    private func backgroundImage(settings: ProcessingSettings, outputExtent: CGRect) -> CIImage {
+        if let pixelBuffer = currentWindowBackgroundPixelBuffer() {
+            return aspectFillImage(from: pixelBuffer, targetSize: outputExtent.size)
+                .cropped(to: outputExtent)
+        }
+
+        let color = settings.background.rgba
+        return CIImage(color: CIColor(
+            red: color.red,
+            green: color.green,
+            blue: color.blue,
+            alpha: color.alpha
+        ))
+        .cropped(to: outputExtent)
     }
 
     private func upscale(mask: CIImage, to extent: CGRect) -> CIImage {
@@ -538,6 +571,88 @@ final class CameraPipeline: NSObject, ObservableObject {
         maskLock.unlock()
     }
 
+    private func currentWindowBackgroundPixelBuffer() -> CVPixelBuffer? {
+        backgroundLock.lock()
+        defer { backgroundLock.unlock() }
+        return latestWindowBackgroundPixelBuffer
+    }
+
+    private func setLatestWindowBackgroundPixelBuffer(_ pixelBuffer: CVPixelBuffer) {
+        backgroundLock.lock()
+        latestWindowBackgroundPixelBuffer = pixelBuffer
+        backgroundLock.unlock()
+    }
+
+    private func clearLatestWindowBackgroundPixelBuffer() {
+        backgroundLock.lock()
+        latestWindowBackgroundPixelBuffer = nil
+        backgroundLock.unlock()
+    }
+
+    private func startWindowBackgroundCapture(window: SCWindow, title: String) {
+        screenCaptureQueue.async {
+            self.stopWindowBackgroundStream()
+            self.clearLatestWindowBackgroundPixelBuffer()
+
+            let filter = SCContentFilter(desktopIndependentWindow: window)
+            let configuration = Self.makeWindowBackgroundStreamConfiguration()
+            let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
+
+            do {
+                try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: self.screenCaptureQueue)
+                self.windowBackgroundStream = stream
+                stream.startCapture { error in
+                    self.screenCaptureQueue.async {
+                        guard self.windowBackgroundStream === stream else { return }
+
+                        if let error {
+                            self.windowBackgroundStream = nil
+                            self.clearLatestWindowBackgroundPixelBuffer()
+                            DispatchQueue.main.async {
+                                self.selectedWindowBackgroundTitle = nil
+                                self.windowBackgroundStatusText = error.localizedDescription
+                            }
+                        } else {
+                            DispatchQueue.main.async {
+                                self.selectedWindowBackgroundTitle = title
+                                self.windowBackgroundStatusText = "Using \(title)"
+                            }
+                        }
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.windowBackgroundStatusText = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func stopWindowBackgroundStream() {
+        guard let stream = windowBackgroundStream else {
+            return
+        }
+
+        windowBackgroundStream = nil
+        stream.stopCapture { _ in }
+    }
+
+    private static func makeWindowBackgroundStreamConfiguration() -> SCStreamConfiguration {
+        let configuration = SCStreamConfiguration()
+        configuration.width = SharedFrameConfiguration.width
+        configuration.height = SharedFrameConfiguration.height
+        configuration.pixelFormat = SharedFrameConfiguration.pixelFormat
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+        configuration.queueDepth = 3
+        configuration.showsCursor = false
+        configuration.scalesToFit = true
+        configuration.preservesAspectRatio = true
+        configuration.ignoreShadowsSingleWindow = true
+        configuration.shouldBeOpaque = true
+        configuration.backgroundColor = screenCaptureBackgroundColor
+        return configuration
+    }
+
     private func beginSegmentationIfPossible() -> Bool {
         segmentationStateLock.lock()
         defer { segmentationStateLock.unlock() }
@@ -600,5 +715,42 @@ extension CameraPipeline: AVCaptureVideoDataOutputSampleBufferDelegate {
             pixelBuffer: pixelBuffer,
             timestamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         )
+    }
+}
+
+extension CameraPipeline: SCStreamOutput, SCStreamDelegate {
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .screen,
+              sampleBuffer.isValid,
+              Self.isCompleteOrIdleScreenCaptureFrame(sampleBuffer),
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            return
+        }
+
+        setLatestWindowBackgroundPixelBuffer(pixelBuffer)
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        screenCaptureQueue.async {
+            guard self.windowBackgroundStream === stream else { return }
+
+            self.windowBackgroundStream = nil
+            self.clearLatestWindowBackgroundPixelBuffer()
+            DispatchQueue.main.async {
+                self.selectedWindowBackgroundTitle = nil
+                self.windowBackgroundStatusText = error.localizedDescription
+            }
+        }
+    }
+
+    private static func isCompleteOrIdleScreenCaptureFrame(_ sampleBuffer: CMSampleBuffer) -> Bool {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
+                as? [[SCStreamFrameInfo: Any]],
+              let rawStatus = attachments.first?[SCStreamFrameInfo.status] as? Int,
+              let status = SCFrameStatus(rawValue: rawStatus) else {
+            return true
+        }
+
+        return status == .complete || status == .idle || status == .started
     }
 }
