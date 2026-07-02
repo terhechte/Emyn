@@ -9,6 +9,7 @@ import Metal
 import PlatformMacOSKit
 import QuartzCore
 import ScreenCaptureKit
+import UniformTypeIdentifiers
 import Vision
 
 struct CameraDeviceInfo: Identifiable, Equatable {
@@ -76,13 +77,60 @@ enum SegmentationAnalysisResolution: String, CaseIterable, Identifiable {
 enum BackgroundMode: String, CaseIterable, Identifiable {
     case replacement
     case blur
+    case media
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .replacement: return "Replace"
+        case .replacement: return "Color"
         case .blur: return "Blur"
+        case .media: return "Media"
+        }
+    }
+}
+
+enum BackgroundMediaFit: String, CaseIterable, Identifiable {
+    case fill
+    case contain
+    case scale
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fill: return "Fill"
+        case .contain: return "Contain"
+        case .scale: return "Scale"
+        }
+    }
+}
+
+enum BackgroundMediaKind {
+    case image
+    case video
+
+    var title: String {
+        switch self {
+        case .image: return "Image"
+        case .video: return "Video"
+        }
+    }
+}
+
+private enum BackgroundMediaError: LocalizedError {
+    case unsupportedFileType
+    case imageCouldNotBeLoaded
+    case videoCouldNotBeLoaded
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedFileType:
+            return "Choose an image or video file."
+        case .imageCouldNotBeLoaded:
+            return "The selected image could not be loaded."
+        case .videoCouldNotBeLoaded:
+            return "The selected video could not be loaded."
         }
     }
 }
@@ -164,6 +212,7 @@ private struct ProcessingSettings {
     var backgroundMode: BackgroundMode = .replacement
     var backgroundBlurRadius: Double = 18
     var background: BackgroundPreset = .black
+    var backgroundMediaFit: BackgroundMediaFit = .fill
     var outputFlipHorizontal = false
     var outputFlipVertical = false
     var ntscEffectEnabled = false
@@ -359,7 +408,10 @@ final class CameraPipeline: NSObject, ObservableObject {
     }
 
     @Published var backgroundMode: BackgroundMode = .replacement {
-        didSet { updateSettings { $0.backgroundMode = self.backgroundMode } }
+        didSet {
+            updateSettings { $0.backgroundMode = self.backgroundMode }
+            updateBackgroundMediaPlaybackState()
+        }
     }
 
     @Published var backgroundBlurRadius: Double = 18 {
@@ -368,6 +420,10 @@ final class CameraPipeline: NSObject, ObservableObject {
 
     @Published var backgroundPreset: BackgroundPreset = .black {
         didSet { updateSettings { $0.background = self.backgroundPreset } }
+    }
+
+    @Published var backgroundMediaFit: BackgroundMediaFit = .fill {
+        didSet { updateSettings { $0.backgroundMediaFit = self.backgroundMediaFit } }
     }
 
     @Published var outputFlipHorizontal = false {
@@ -393,11 +449,18 @@ final class CameraPipeline: NSObject, ObservableObject {
     @Published private(set) var selectedWindowBackgroundOptions: [WindowBackgroundOption] = []
     @Published private(set) var activeWindowBackgroundIndex: Int?
     @Published private(set) var windowBackgroundStatusText = "Color background"
+    @Published private(set) var selectedBackgroundMediaTitle: String?
+    @Published private(set) var selectedBackgroundMediaKind: BackgroundMediaKind?
+    @Published private(set) var backgroundMediaStatusText = "No media selected"
 
     var previewHandler: ((CMSampleBuffer) -> Void)?
 
     var hasWindowBackgroundSelection: Bool {
         !selectedWindowBackgroundOptions.isEmpty
+    }
+
+    var hasBackgroundMediaSelection: Bool {
+        selectedBackgroundMediaKind != nil
     }
 
     var activeWindowBackgroundOption: WindowBackgroundOption? {
@@ -420,6 +483,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     private let renderLock = NSLock()
     private let segmentationStateLock = NSLock()
     private let backgroundLock = NSLock()
+    private let backgroundMediaLock = NSLock()
     private let imageOverlayLock = NSLock()
 
     private let ciContext: CIContext
@@ -453,6 +517,12 @@ final class CameraPipeline: NSObject, ObservableObject {
     private var lastFPSUpdate = CACurrentMediaTime()
     private var windowBackgroundStream: SCStream?
     private var latestWindowBackgroundPixelBuffer: CVPixelBuffer?
+    private var backgroundMediaImage: CIImage?
+    private var backgroundMediaPlayer: AVPlayer?
+    private var backgroundMediaVideoOutput: AVPlayerItemVideoOutput?
+    private var backgroundMediaVideoTransform: CGAffineTransform = .identity
+    private var latestBackgroundMediaVideoImage: CIImage?
+    private var backgroundMediaLoopObserver: NSObjectProtocol?
     private var imageOverlayCache: [String: CIImage] = [:]
 
     override init() {
@@ -499,6 +569,10 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
+    deinit {
+        clearBackgroundMediaResources()
+    }
+
     func refreshCameras() {
         let devices = Self.discoverCameraDevices()
         let infos = devices.map {
@@ -537,6 +611,8 @@ final class CameraPipeline: NSObject, ObservableObject {
     }
 
     func stop() {
+        setBackgroundMediaPlayback(shouldPlay: false)
+
         captureQueue.async {
             self.captureSession.stopRunning()
             self.captureSession.beginConfiguration()
@@ -548,6 +624,37 @@ final class CameraPipeline: NSObject, ObservableObject {
                 self.isRunning = false
                 self.statusText = "Stopped"
             }
+        }
+    }
+
+    func selectBackgroundMedia(url: URL) {
+        do {
+            let kind = try Self.mediaKind(for: url)
+            switch kind {
+            case .image:
+                try selectBackgroundImage(url: url)
+            case .video:
+                try selectBackgroundVideo(url: url)
+            }
+
+            selectedBackgroundMediaTitle = url.deletingPathExtension().lastPathComponent
+            selectedBackgroundMediaKind = kind
+            backgroundMediaStatusText = "Using \(kind.title.lowercased()) background"
+            backgroundMode = .media
+        } catch {
+            backgroundMediaStatusText = error.localizedDescription
+            setStatus("Background media failed: \(error.localizedDescription)")
+        }
+    }
+
+    func clearBackgroundMedia() {
+        clearBackgroundMediaResources()
+        selectedBackgroundMediaTitle = nil
+        selectedBackgroundMediaKind = nil
+        backgroundMediaStatusText = "No media selected"
+
+        if backgroundMode == .media {
+            backgroundMode = .replacement
         }
     }
 
@@ -712,6 +819,7 @@ final class CameraPipeline: NSObject, ObservableObject {
                 DispatchQueue.main.async {
                     self.isRunning = true
                     self.statusText = "Running"
+                    self.updateBackgroundMediaPlaybackState()
                 }
             } catch {
                 self.captureSession.commitConfiguration()
@@ -728,6 +836,120 @@ final class CameraPipeline: NSObject, ObservableObject {
         )
 
         return discovery.devices.filter { $0.localizedName != SharedFrameConfiguration.virtualCameraName }
+    }
+
+    private func selectBackgroundImage(url: URL) throws {
+        guard let image = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else {
+            throw BackgroundMediaError.imageCouldNotBeLoaded
+        }
+
+        clearBackgroundMediaResources()
+        backgroundMediaLock.lock()
+        backgroundMediaImage = normalizeExtent(image)
+        backgroundMediaLock.unlock()
+    }
+
+    private func selectBackgroundVideo(url: URL) throws {
+        let asset = AVURLAsset(url: url)
+        guard let videoTrack = asset.tracks(withMediaType: .video).first else {
+            throw BackgroundMediaError.videoCouldNotBeLoaded
+        }
+
+        let item = AVPlayerItem(asset: asset)
+        let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+            kCVPixelBufferMetalCompatibilityKey as String: true,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:]
+        ])
+        item.add(output)
+
+        let player = AVPlayer(playerItem: item)
+        player.isMuted = true
+        player.actionAtItemEnd = .none
+
+        clearBackgroundMediaResources()
+        backgroundMediaLock.lock()
+        backgroundMediaPlayer = player
+        backgroundMediaVideoOutput = output
+        backgroundMediaVideoTransform = videoTrack.preferredTransform
+        latestBackgroundMediaVideoImage = nil
+        backgroundMediaLock.unlock()
+
+        backgroundMediaLoopObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self, weak player] _ in
+            guard let self, let player, self.isCurrentBackgroundMediaPlayer(player) else { return }
+            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+                DispatchQueue.main.async {
+                    guard self.isCurrentBackgroundMediaPlayer(player) else { return }
+                    self.updateBackgroundMediaPlaybackState()
+                }
+            }
+        }
+
+        updateBackgroundMediaPlaybackState()
+    }
+
+    private static func mediaKind(for url: URL) throws -> BackgroundMediaKind {
+        let resourceType = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType
+        let filenameType = UTType(filenameExtension: url.pathExtension)
+        let contentType = resourceType ?? filenameType
+
+        guard let contentType else {
+            throw BackgroundMediaError.unsupportedFileType
+        }
+
+        if contentType.conforms(to: .image) {
+            return .image
+        }
+
+        if contentType.conforms(to: .movie) || contentType.conforms(to: .video) {
+            return .video
+        }
+
+        throw BackgroundMediaError.unsupportedFileType
+    }
+
+    private func clearBackgroundMediaResources() {
+        if let backgroundMediaLoopObserver {
+            NotificationCenter.default.removeObserver(backgroundMediaLoopObserver)
+            self.backgroundMediaLoopObserver = nil
+        }
+
+        backgroundMediaLock.lock()
+        let player = backgroundMediaPlayer
+        backgroundMediaImage = nil
+        backgroundMediaPlayer = nil
+        backgroundMediaVideoOutput = nil
+        backgroundMediaVideoTransform = .identity
+        latestBackgroundMediaVideoImage = nil
+        backgroundMediaLock.unlock()
+
+        player?.pause()
+    }
+
+    private func updateBackgroundMediaPlaybackState() {
+        setBackgroundMediaPlayback(shouldPlay: isRunning && backgroundMode == .media)
+    }
+
+    private func setBackgroundMediaPlayback(shouldPlay: Bool) {
+        backgroundMediaLock.lock()
+        let player = backgroundMediaPlayer
+        backgroundMediaLock.unlock()
+
+        if shouldPlay {
+            player?.play()
+        } else {
+            player?.pause()
+        }
+    }
+
+    private func isCurrentBackgroundMediaPlayer(_ player: AVPlayer) -> Bool {
+        backgroundMediaLock.lock()
+        defer { backgroundMediaLock.unlock() }
+        return backgroundMediaPlayer === player
     }
 
     private func scheduleSegmentation(for pixelBuffer: CVPixelBuffer) {
@@ -938,14 +1160,34 @@ final class CameraPipeline: NSObject, ObservableObject {
         foreground: CIImage,
         outputExtent: CGRect
     ) -> CIImage {
-        if settings.backgroundMode == .blur {
+        switch settings.backgroundMode {
+        case .blur:
             let radius = max(0, settings.backgroundBlurRadius)
             return foreground
                 .clampedToExtent()
                 .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
                 .cropped(to: outputExtent)
-        }
+        case .media:
+            let backing = solidBackgroundImage(settings: settings, outputExtent: outputExtent)
+            guard let mediaImage = currentBackgroundMediaImage() else {
+                return backing
+            }
 
+            return fittedMediaBackgroundImage(
+                mediaImage,
+                fit: settings.backgroundMediaFit,
+                outputExtent: outputExtent,
+                backing: backing
+            )
+        case .replacement:
+            return solidBackgroundImage(settings: settings, outputExtent: outputExtent)
+        }
+    }
+
+    private func solidBackgroundImage(
+        settings: ProcessingSettings,
+        outputExtent: CGRect
+    ) -> CIImage {
         let color = settings.background.rgba
         return CIImage(color: CIColor(
             red: color.red,
@@ -954,6 +1196,67 @@ final class CameraPipeline: NSObject, ObservableObject {
             alpha: color.alpha
         ))
         .cropped(to: outputExtent)
+    }
+
+    private func fittedMediaBackgroundImage(
+        _ image: CIImage,
+        fit: BackgroundMediaFit,
+        outputExtent: CGRect,
+        backing: CIImage
+    ) -> CIImage {
+        let normalizedImage = normalizeExtent(image)
+        guard normalizedImage.extent.width > 0, normalizedImage.extent.height > 0 else {
+            return backing
+        }
+
+        let fittedImage: CIImage
+        switch fit {
+        case .fill:
+            fittedImage = transformedMediaImage(
+                normalizedImage,
+                scaleX: max(outputExtent.width / normalizedImage.extent.width, outputExtent.height / normalizedImage.extent.height),
+                scaleY: max(outputExtent.width / normalizedImage.extent.width, outputExtent.height / normalizedImage.extent.height),
+                outputExtent: outputExtent
+            )
+        case .contain:
+            fittedImage = transformedMediaImage(
+                normalizedImage,
+                scaleX: min(outputExtent.width / normalizedImage.extent.width, outputExtent.height / normalizedImage.extent.height),
+                scaleY: min(outputExtent.width / normalizedImage.extent.width, outputExtent.height / normalizedImage.extent.height),
+                outputExtent: outputExtent
+            )
+        case .scale:
+            fittedImage = transformedMediaImage(
+                normalizedImage,
+                scaleX: outputExtent.width / normalizedImage.extent.width,
+                scaleY: outputExtent.height / normalizedImage.extent.height,
+                outputExtent: outputExtent
+            )
+        }
+
+        return fittedImage
+            .cropped(to: outputExtent)
+            .composited(over: backing)
+            .cropped(to: outputExtent)
+    }
+
+    private func transformedMediaImage(
+        _ image: CIImage,
+        scaleX: CGFloat,
+        scaleY: CGFloat,
+        outputExtent: CGRect
+    ) -> CIImage {
+        let scaledSize = CGSize(
+            width: image.extent.width * scaleX,
+            height: image.extent.height * scaleY
+        )
+
+        return image
+            .transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+            .transformed(by: CGAffineTransform(
+                translationX: outputExtent.midX - scaledSize.width * 0.5,
+                y: outputExtent.midY - scaledSize.height * 0.5
+            ))
     }
 
     private func composePerson(
@@ -1388,6 +1691,44 @@ final class CameraPipeline: NSObject, ObservableObject {
         maskLock.lock()
         latestMask = nil
         maskLock.unlock()
+    }
+
+    private func currentBackgroundMediaImage() -> CIImage? {
+        backgroundMediaLock.lock()
+        if let image = backgroundMediaImage {
+            backgroundMediaLock.unlock()
+            return image
+        }
+
+        let videoOutput = backgroundMediaVideoOutput
+        let videoTransform = backgroundMediaVideoTransform
+        let fallbackImage = latestBackgroundMediaVideoImage
+        backgroundMediaLock.unlock()
+
+        guard let videoOutput else {
+            return nil
+        }
+
+        let itemTime = videoOutput.itemTime(forHostTime: CACurrentMediaTime())
+        let shouldCopyFrame = videoOutput.hasNewPixelBuffer(forItemTime: itemTime) || fallbackImage == nil
+        guard shouldCopyFrame else {
+            return fallbackImage
+        }
+
+        var displayTime = CMTime.invalid
+        guard let pixelBuffer = videoOutput.copyPixelBuffer(
+            forItemTime: itemTime,
+            itemTimeForDisplay: &displayTime
+        ) else {
+            return fallbackImage
+        }
+
+        let image = normalizeExtent(CIImage(cvPixelBuffer: pixelBuffer).transformed(by: videoTransform))
+        backgroundMediaLock.lock()
+        latestBackgroundMediaVideoImage = image
+        backgroundMediaLock.unlock()
+
+        return image
     }
 
     private func currentWindowBackgroundPixelBuffer() -> CVPixelBuffer? {

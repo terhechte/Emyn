@@ -5,7 +5,9 @@
 //  Created by Benedikt Terhechte on 01.07.26.
 //
 
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     private static let softwareCursorBaseSize: CGFloat = 32
@@ -194,6 +196,41 @@ struct ContentView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Slider(value: $pipeline.backgroundBlurRadius, in: 4...40, step: 1)
+                        }
+                    } else if pipeline.backgroundMode == .media {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                Button {
+                                    chooseBackgroundMedia()
+                                } label: {
+                                    Label("Choose Media", systemImage: "photo.on.rectangle.angled")
+                                }
+                                .controlSize(.small)
+
+                                if pipeline.hasBackgroundMediaSelection {
+                                    Button {
+                                        pipeline.clearBackgroundMedia()
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                    }
+                                    .controlSize(.small)
+                                    .help("Clear background media")
+                                }
+                            }
+
+                            Picker("Media Fit", selection: backgroundMediaFitSelection) {
+                                ForEach(BackgroundMediaFit.allCases) { fit in
+                                    Text(fit.title).tag(fit)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .controlSize(.small)
+
+                            Text(pipeline.selectedBackgroundMediaTitle ?? pipeline.backgroundMediaStatusText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
                         }
                     } else {
                         HStack(spacing: 8) {
@@ -486,6 +523,14 @@ struct ContentView: View {
         }
     }
 
+    private var backgroundMediaFitSelection: Binding<BackgroundMediaFit> {
+        Binding {
+            pipeline.backgroundMediaFit
+        } set: { newValue in
+            pipeline.backgroundMediaFit = newValue
+        }
+    }
+
     private var ntscPresetSelection: Binding<NtscPreset> {
         Binding {
             pipeline.ntscPreset
@@ -566,6 +611,21 @@ struct ContentView: View {
     private func clearSelectedWindowBackground() {
         windowControl.deactivate()
         pipeline.clearWindowBackground()
+    }
+
+    private func chooseBackgroundMedia() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image, .movie, .video]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.prompt = "Choose"
+        panel.message = "Choose an image or video to use as the generated video background."
+
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            pipeline.selectBackgroundMedia(url: url)
+        }
     }
 
     private func handleFunctionKeyTrigger(_ trigger: FunctionKeyTrigger) {
