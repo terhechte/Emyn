@@ -43,11 +43,15 @@ extern "C" {
         key_down: bool,
     ) -> *mut c_void;
 
+    fn CGEventSourceCreate(state_id: u32) -> *mut c_void;
+
     fn CGEventGetLocation(event: *mut c_void) -> RawPoint;
 
     fn CGEventSetLocation(event: *mut c_void, x: f64, y: f64);
 
     fn CGEventSetFlags(event: *mut c_void, flags: u64);
+
+    fn CGEventSetTimestamp(event: *mut c_void, timestamp: u64);
 
     fn CGEventPostToPid(pid: i32, event: *mut c_void);
 
@@ -63,6 +67,10 @@ extern "C" {
     fn CGDisplayShowCursor(display: u32) -> i32;
     fn CGWarpMouseCursorPosition(x: f64, y: f64) -> i32;
     fn CGMainDisplayID() -> u32;
+}
+
+extern "C" {
+    fn clock_gettime_nsec_np(clock_id: i32) -> u64;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -88,6 +96,10 @@ const CG_SESSION_EVENT_TAP: u32 = 1;
 const CG_HEAD_INSERT_EVENT_TAP: u32 = 0;
 // CGEventTapOptions
 const CG_DEFAULT_TAP: u32 = 0;
+// CGEventSourceStateID
+const CG_EVENT_SOURCE_STATE_HID_SYSTEM: u32 = 1;
+// macOS clock id for uptime nanoseconds, matching mach continuous event timestamps.
+const CLOCK_UPTIME_RAW: i32 = 8;
 
 // CGEventType raw values
 const EV_LEFT_MOUSE_DOWN: u32 = 1;
@@ -230,7 +242,6 @@ unsafe extern "C" fn tap_callback(
                         // Forward the event first, then schedule deactivation.
                         let forward_event = create_forward_keyboard_event(event_type, event);
                         if !forward_event.is_null() {
-                            stamp_keyboard_routing_fields(state, forward_event);
                             post_keyboard_event_to_target(state, forward_event);
                             CFRelease(forward_event);
                         }
@@ -254,7 +265,6 @@ unsafe extern "C" fn tap_callback(
         // Forward the keyboard event to the target via SkyLight.
         let forward_event = create_forward_keyboard_event(event_type, event);
         if !forward_event.is_null() {
-            stamp_keyboard_routing_fields(state, forward_event);
             post_keyboard_event_to_target(state, forward_event);
             CFRelease(forward_event);
         }
@@ -330,9 +340,14 @@ unsafe fn create_forward_keyboard_event(event_type: u32, source_event: *mut c_vo
         _ => return std::ptr::null_mut(),
     };
 
-    let event = CGEventCreateKeyboardEvent(std::ptr::null(), keycode as u16, key_down);
+    let source = CGEventSourceCreate(CG_EVENT_SOURCE_STATE_HID_SYSTEM);
+    let event = CGEventCreateKeyboardEvent(source as *const c_void, keycode as u16, key_down);
+    if !source.is_null() {
+        CFRelease(source);
+    }
     if !event.is_null() {
         CGEventSetFlags(event, CGEventGetFlags(source_event));
+        CGEventSetTimestamp(event, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
     }
     event
 }
@@ -352,38 +367,32 @@ unsafe fn post_keyboard_event_to_target_values(
     attach_keyboard_auth_message: bool,
     event: *mut c_void,
 ) {
-    if let Some(window_id) = target_window_id {
-        let result = crate::input::skylight::with_menu_shortcut_activation(
-            target_pid as libc::pid_t,
-            window_id,
-            || {
-                post_keyboard_event_once(target_pid, attach_keyboard_auth_message, event);
-                Ok(())
-            },
-        );
+    let mut skylight_posted = false;
+    let mut owner_posted = false;
 
-        if result.is_ok() {
-            debug_event_tap(format_args!(
-                "keyboard posted with front/restore pid={} window_id={} result={:?}",
-                target_pid, window_id, result
-            ));
-            return;
+    if attach_keyboard_auth_message {
+        skylight_posted = post_keyboard_event_once(target_pid, true, event);
+        if !skylight_posted {
+            owner_posted = post_keyboard_event_to_window_owner(target_pid, target_window_id, event);
         }
-
-        debug_event_tap(format_args!(
-            "keyboard front/restore failed pid={} window_id={} result={:?}",
-            target_pid, window_id, result
-        ));
+    } else {
+        owner_posted = post_keyboard_event_to_window_owner(target_pid, target_window_id, event);
+        if !owner_posted {
+            skylight_posted = post_keyboard_event_once(target_pid, false, event);
+        }
     }
 
-    post_keyboard_event_once(target_pid, attach_keyboard_auth_message, event);
+    debug_event_tap(format_args!(
+        "keyboard routed pid={} window_id={:?} auth={} skylight_posted={} owner_psn_posted={}",
+        target_pid, target_window_id, attach_keyboard_auth_message, skylight_posted, owner_posted
+    ));
 }
 
 unsafe fn post_keyboard_event_once(
     target_pid: i32,
     attach_keyboard_auth_message: bool,
     event: *mut c_void,
-) {
+) -> bool {
     let skylight_posted = crate::input::skylight::post_to_pid(
         target_pid as libc::pid_t,
         event,
@@ -396,6 +405,23 @@ unsafe fn post_keyboard_event_once(
     if !skylight_posted {
         CGEventPostToPid(target_pid, event);
     }
+    skylight_posted
+}
+
+unsafe fn post_keyboard_event_to_window_owner(
+    target_pid: i32,
+    target_window_id: Option<u32>,
+    event: *mut c_void,
+) -> bool {
+    target_window_id
+        .map(|window_id| {
+            crate::input::skylight::post_to_window_owner(
+                window_id,
+                target_pid as libc::pid_t,
+                event,
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn debug_event_tap(args: std::fmt::Arguments<'_>) {
@@ -540,27 +566,6 @@ unsafe fn stamp_mouse_routing_fields(
     }
 }
 
-unsafe fn stamp_keyboard_routing_fields(state: &TapState, event: *mut c_void) {
-    stamp_keyboard_routing_fields_for_target(state.target_pid, state.target_window_id, event);
-}
-
-unsafe fn stamp_keyboard_routing_fields_for_target(
-    target_pid: i32,
-    target_window_id: Option<u32>,
-    event: *mut c_void,
-) {
-    crate::input::skylight::set_integer_field(event, 40, target_pid as i64);
-
-    let Some(window_id) = target_window_id else {
-        return;
-    };
-
-    let window_id = window_id as i64;
-    crate::input::skylight::set_integer_field(event, 51, window_id);
-    crate::input::skylight::set_integer_field(event, 91, window_id);
-    crate::input::skylight::set_integer_field(event, 92, window_id);
-}
-
 pub fn forward_keyboard_event_for_testing(
     target_pid: i32,
     target_window_id: Option<u32>,
@@ -570,13 +575,17 @@ pub fn forward_keyboard_event_for_testing(
     flags: u64,
 ) -> anyhow::Result<()> {
     unsafe {
-        let event = CGEventCreateKeyboardEvent(std::ptr::null(), keycode, key_down);
+        let source = CGEventSourceCreate(CG_EVENT_SOURCE_STATE_HID_SYSTEM);
+        let event = CGEventCreateKeyboardEvent(source as *const c_void, keycode, key_down);
+        if !source.is_null() {
+            CFRelease(source);
+        }
         if event.is_null() {
             anyhow::bail!("CGEventCreateKeyboardEvent failed");
         }
 
         CGEventSetFlags(event, flags);
-        stamp_keyboard_routing_fields_for_target(target_pid, target_window_id, event);
+        CGEventSetTimestamp(event, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
         post_keyboard_event_to_target_values(
             target_pid,
             target_window_id,
