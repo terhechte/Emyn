@@ -124,6 +124,9 @@ const FIELD_KEYCODE: u32 = 9;
 // CGEventField: kCGMouseEventClickState / kCGMouseEventButtonNumber
 const FIELD_MOUSE_CLICK_STATE: u32 = 1;
 const FIELD_MOUSE_BUTTON: u32 = 3;
+// CGEventField: kCGMouseEventDeltaX / kCGMouseEventDeltaY
+const FIELD_MOUSE_DELTA_X: u32 = 4;
+const FIELD_MOUSE_DELTA_Y: u32 = 5;
 
 // macOS virtual key codes for Option keys
 const VK_OPTION: i64 = 58;
@@ -178,6 +181,9 @@ pub struct TapState {
     pub alt_press_times: Mutex<Vec<Instant>>,
     // Shared click-group id for down/drag/up sequences routed to a background window.
     pub current_click_group: Mutex<Option<i64>>,
+    // Virtual pointer constrained to the controllable view. This avoids
+    // accumulating off-edge physical cursor travel while the hidden cursor is grabbed.
+    virtual_cursor: Mutex<RawPoint>,
     // Pointer back to the port so the callback can re-enable it on timeout.
     pub tap_port: Mutex<*mut c_void>,
 }
@@ -274,17 +280,7 @@ unsafe extern "C" fn tap_callback(
     }
 
     // ── Mouse events ──────────────────────────────────────────────────────────
-    let raw_loc = CGEventGetLocation(event);
-    let (rx, ry) = (raw_loc.x, raw_loc.y);
-
-    // Clamp to view bounds.
-    let cx = rx.clamp(state.view_x, state.view_x + state.view_w);
-    let cy = ry.clamp(state.view_y, state.view_y + state.view_h);
-
-    // Warp cursor back into view if it strayed.
-    if rx != cx || ry != cy {
-        CGWarpMouseCursorPosition(cx, cy);
-    }
+    let (cx, cy) = update_virtual_cursor(state, event_type, event);
 
     // Normalised position (0–1) within the view.
     let norm_x = if state.view_w > 0.0 {
@@ -323,6 +319,64 @@ unsafe extern "C" fn tap_callback(
     }
 
     std::ptr::null_mut() // suppress original
+}
+
+unsafe fn update_virtual_cursor(
+    state: &TapState,
+    event_type: u32,
+    event: *mut c_void,
+) -> (f64, f64) {
+    let raw_loc = CGEventGetLocation(event);
+    let view_min_x = state.view_x;
+    let view_max_x = state.view_x + state.view_w;
+    let view_min_y = state.view_y;
+    let view_max_y = state.view_y + state.view_h;
+
+    let mut cursor = state.virtual_cursor.lock().unwrap_or_else(|e| e.into_inner());
+
+    if matches!(
+        event_type,
+        EV_MOUSE_MOVED | EV_LEFT_MOUSE_DRAGGED | EV_RIGHT_MOUSE_DRAGGED | EV_OTHER_MOUSE_DRAGGED
+    ) {
+        let delta_x = CGEventGetIntegerValueField(event, FIELD_MOUSE_DELTA_X) as f64;
+        let delta_y = CGEventGetIntegerValueField(event, FIELD_MOUSE_DELTA_Y) as f64;
+        apply_virtual_cursor_delta(
+            &mut cursor,
+            delta_x,
+            delta_y,
+            state.view_x,
+            state.view_y,
+            state.view_w,
+            state.view_h,
+        );
+    } else if !(view_min_x..=view_max_x).contains(&cursor.x)
+        || !(view_min_y..=view_max_y).contains(&cursor.y)
+    {
+        cursor.x = raw_loc.x.clamp(view_min_x, view_max_x);
+        cursor.y = raw_loc.y.clamp(view_min_y, view_max_y);
+    }
+
+    // Keep the hidden system cursor close to the virtual cursor. Movement is
+    // driven by per-event deltas above, so off-edge physical travel is discarded
+    // immediately and reversing direction responds on the next delta.
+    if (raw_loc.x - cursor.x).abs() > 0.5 || (raw_loc.y - cursor.y).abs() > 0.5 {
+        CGWarpMouseCursorPosition(cursor.x, cursor.y);
+    }
+
+    (cursor.x, cursor.y)
+}
+
+fn apply_virtual_cursor_delta(
+    cursor: &mut RawPoint,
+    delta_x: f64,
+    delta_y: f64,
+    view_x: f64,
+    view_y: f64,
+    view_w: f64,
+    view_h: f64,
+) {
+    cursor.x = (cursor.x + delta_x).clamp(view_x, view_x + view_w);
+    cursor.y = (cursor.y + delta_y).clamp(view_y, view_y + view_h);
 }
 
 fn log_incoming_key_event(state: &TapState, event_type: u32, keycode: i64, flags: u64) {
@@ -717,6 +771,10 @@ impl EventTapSession {
             on_deactivate,
             alt_press_times: Mutex::new(Vec::new()),
             current_click_group: Mutex::new(None),
+            virtual_cursor: Mutex::new(RawPoint {
+                x: view_x + view_w * 0.5,
+                y: view_y + view_h * 0.5,
+            }),
             tap_port: Mutex::new(std::ptr::null_mut()),
         });
 
@@ -784,5 +842,35 @@ impl Drop for EventTapSession {
                 CFRelease(self.tap_port);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn virtual_cursor_moves_immediately_after_saturating_left_edge() {
+        let mut cursor = RawPoint { x: 50.0, y: 50.0 };
+
+        for _ in 0..600 {
+            apply_virtual_cursor_delta(&mut cursor, -10.0, 0.0, 0.0, 0.0, 100.0, 100.0);
+        }
+
+        assert_eq!(cursor.x, 0.0);
+
+        apply_virtual_cursor_delta(&mut cursor, 1.0, 0.0, 0.0, 0.0, 100.0, 100.0);
+
+        assert_eq!(cursor.x, 1.0);
+    }
+
+    #[test]
+    fn virtual_cursor_clamps_each_axis_independently() {
+        let mut cursor = RawPoint { x: 50.0, y: 50.0 };
+
+        apply_virtual_cursor_delta(&mut cursor, 75.0, -75.0, 0.0, 0.0, 100.0, 100.0);
+
+        assert_eq!(cursor.x, 100.0);
+        assert_eq!(cursor.y, 0.0);
     }
 }
