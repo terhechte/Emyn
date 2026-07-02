@@ -28,7 +28,7 @@ final class WindowBackgroundPickerModel: ObservableObject {
     @Published private(set) var statusText = "Loading windows"
 
     private var refreshGeneration = UUID()
-    private static let previewBackgroundColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+    private static let previewBackgroundColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0)
 
     func refresh() {
         let generation = UUID()
@@ -151,7 +151,7 @@ final class WindowBackgroundPickerModel: ObservableObject {
         configuration.scalesToFit = true
         configuration.preservesAspectRatio = true
         configuration.ignoreShadowsSingleWindow = true
-        configuration.shouldBeOpaque = true
+        configuration.shouldBeOpaque = false
         configuration.backgroundColor = previewBackgroundColor
         return configuration
     }

@@ -227,6 +227,8 @@ struct ContentView: View {
                             .pickerStyle(.segmented)
                             .controlSize(.small)
 
+                            backgroundAlignmentPicker(selection: backgroundMediaAlignmentSelection)
+
                             Text(pipeline.selectedBackgroundMediaTitle ?? pipeline.backgroundMediaStatusText)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -280,6 +282,19 @@ struct ContentView: View {
                             .controlSize(.small)
                             .help("Clear window background")
                         }
+                    }
+
+                    if pipeline.hasWindowBackgroundSelection {
+                        Picker("Window Fit", selection: windowBackgroundFitSelection) {
+                            ForEach(BackgroundMediaFit.allCases) { fit in
+                                Text(fit.title).tag(fit)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .controlSize(.small)
+
+                        backgroundAlignmentPicker(selection: windowBackgroundAlignmentSelection)
                     }
 
                     Text(pipeline.selectedWindowBackgroundTitle ?? pipeline.windowBackgroundStatusText)
@@ -489,6 +504,24 @@ struct ContentView: View {
         .help(isActive ? "\(title) flip enabled" : "Flip output \(title.lowercased())")
     }
 
+    private func backgroundAlignmentPicker(selection: Binding<BackgroundContentAlignment>) -> some View {
+        HStack(spacing: 8) {
+            Text("Alignment")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Picker("Alignment", selection: selection) {
+                ForEach(BackgroundContentAlignment.allCases) { alignment in
+                    Text(alignment.title).tag(alignment)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
     private var ntscPresetPicker: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("NTSC Preset", systemImage: "tv")
@@ -528,6 +561,30 @@ struct ContentView: View {
             pipeline.backgroundMediaFit
         } set: { newValue in
             pipeline.backgroundMediaFit = newValue
+        }
+    }
+
+    private var backgroundMediaAlignmentSelection: Binding<BackgroundContentAlignment> {
+        Binding {
+            pipeline.backgroundMediaAlignment
+        } set: { newValue in
+            pipeline.backgroundMediaAlignment = newValue
+        }
+    }
+
+    private var windowBackgroundFitSelection: Binding<BackgroundMediaFit> {
+        Binding {
+            pipeline.windowBackgroundFit
+        } set: { newValue in
+            pipeline.windowBackgroundFit = newValue
+        }
+    }
+
+    private var windowBackgroundAlignmentSelection: Binding<BackgroundContentAlignment> {
+        Binding {
+            pipeline.windowBackgroundAlignment
+        } set: { newValue in
+            pipeline.windowBackgroundAlignment = newValue
         }
     }
 

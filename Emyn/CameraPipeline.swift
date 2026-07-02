@@ -106,6 +106,58 @@ enum BackgroundMediaFit: String, CaseIterable, Identifiable {
     }
 }
 
+enum BackgroundContentAlignment: String, CaseIterable, Identifiable {
+    case topLeft
+    case topCenter
+    case topRight
+    case middleLeft
+    case middleCenter
+    case middleRight
+    case bottomLeft
+    case bottomCenter
+    case bottomRight
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .topLeft: return "Top Left"
+        case .topCenter: return "Top Center"
+        case .topRight: return "Top Right"
+        case .middleLeft: return "Middle Left"
+        case .middleCenter: return "Middle Center"
+        case .middleRight: return "Middle Right"
+        case .bottomLeft: return "Bottom Left"
+        case .bottomCenter: return "Bottom Center"
+        case .bottomRight: return "Bottom Right"
+        }
+    }
+
+    func origin(for contentSize: CGSize, in outputExtent: CGRect) -> CGPoint {
+        let x: CGFloat
+        switch self {
+        case .topLeft, .middleLeft, .bottomLeft:
+            x = outputExtent.minX
+        case .topCenter, .middleCenter, .bottomCenter:
+            x = outputExtent.midX - contentSize.width * 0.5
+        case .topRight, .middleRight, .bottomRight:
+            x = outputExtent.maxX - contentSize.width
+        }
+
+        let y: CGFloat
+        switch self {
+        case .bottomLeft, .bottomCenter, .bottomRight:
+            y = outputExtent.minY
+        case .middleLeft, .middleCenter, .middleRight:
+            y = outputExtent.midY - contentSize.height * 0.5
+        case .topLeft, .topCenter, .topRight:
+            y = outputExtent.maxY - contentSize.height
+        }
+
+        return CGPoint(x: x, y: y)
+    }
+}
+
 enum BackgroundMediaKind {
     case image
     case video
@@ -213,6 +265,9 @@ private struct ProcessingSettings {
     var backgroundBlurRadius: Double = 18
     var background: BackgroundPreset = .black
     var backgroundMediaFit: BackgroundMediaFit = .fill
+    var backgroundMediaAlignment: BackgroundContentAlignment = .middleCenter
+    var windowBackgroundFit: BackgroundMediaFit = .fill
+    var windowBackgroundAlignment: BackgroundContentAlignment = .middleCenter
     var outputFlipHorizontal = false
     var outputFlipVertical = false
     var ntscEffectEnabled = false
@@ -426,6 +481,18 @@ final class CameraPipeline: NSObject, ObservableObject {
         didSet { updateSettings { $0.backgroundMediaFit = self.backgroundMediaFit } }
     }
 
+    @Published var backgroundMediaAlignment: BackgroundContentAlignment = .middleCenter {
+        didSet { updateSettings { $0.backgroundMediaAlignment = self.backgroundMediaAlignment } }
+    }
+
+    @Published var windowBackgroundFit: BackgroundMediaFit = .fill {
+        didSet { updateSettings { $0.windowBackgroundFit = self.windowBackgroundFit } }
+    }
+
+    @Published var windowBackgroundAlignment: BackgroundContentAlignment = .middleCenter {
+        didSet { updateSettings { $0.windowBackgroundAlignment = self.windowBackgroundAlignment } }
+    }
+
     @Published var outputFlipHorizontal = false {
         didSet { updateSettings { $0.outputFlipHorizontal = self.outputFlipHorizontal } }
     }
@@ -490,7 +557,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
     private let segmentationRequest = VNGeneratePersonSegmentationRequest()
     private let frameWriter: SharedFrameWriter?
-    private static let screenCaptureBackgroundColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+    private static let screenCaptureBackgroundColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0)
     private static let confettiParticleCount = 144
     private static let confettiParticleScale: CGFloat = 1.3
     private static let confettiPalette: [(red: CGFloat, green: CGFloat, blue: CGFloat)] = [
@@ -1131,8 +1198,13 @@ final class CameraPipeline: NSObject, ObservableObject {
             return baseBackground
         }
 
-        var windowBackground = aspectFillImage(from: pixelBuffer, targetSize: outputExtent.size)
-            .cropped(to: outputExtent)
+        var windowBackground = fittedMediaBackgroundImage(
+            CIImage(cvPixelBuffer: pixelBuffer),
+            fit: settings.windowBackgroundFit,
+            alignment: settings.windowBackgroundAlignment,
+            outputExtent: outputExtent,
+            backing: baseBackground
+        )
 
         if effects.windowZoom > 1.001 {
             windowBackground = zoomedWindowBackground(
@@ -1176,6 +1248,7 @@ final class CameraPipeline: NSObject, ObservableObject {
             return fittedMediaBackgroundImage(
                 mediaImage,
                 fit: settings.backgroundMediaFit,
+                alignment: settings.backgroundMediaAlignment,
                 outputExtent: outputExtent,
                 backing: backing
             )
@@ -1201,6 +1274,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     private func fittedMediaBackgroundImage(
         _ image: CIImage,
         fit: BackgroundMediaFit,
+        alignment: BackgroundContentAlignment,
         outputExtent: CGRect,
         backing: CIImage
     ) -> CIImage {
@@ -1216,6 +1290,7 @@ final class CameraPipeline: NSObject, ObservableObject {
                 normalizedImage,
                 scaleX: max(outputExtent.width / normalizedImage.extent.width, outputExtent.height / normalizedImage.extent.height),
                 scaleY: max(outputExtent.width / normalizedImage.extent.width, outputExtent.height / normalizedImage.extent.height),
+                alignment: alignment,
                 outputExtent: outputExtent
             )
         case .contain:
@@ -1223,6 +1298,7 @@ final class CameraPipeline: NSObject, ObservableObject {
                 normalizedImage,
                 scaleX: min(outputExtent.width / normalizedImage.extent.width, outputExtent.height / normalizedImage.extent.height),
                 scaleY: min(outputExtent.width / normalizedImage.extent.width, outputExtent.height / normalizedImage.extent.height),
+                alignment: alignment,
                 outputExtent: outputExtent
             )
         case .scale:
@@ -1230,6 +1306,7 @@ final class CameraPipeline: NSObject, ObservableObject {
                 normalizedImage,
                 scaleX: outputExtent.width / normalizedImage.extent.width,
                 scaleY: outputExtent.height / normalizedImage.extent.height,
+                alignment: alignment,
                 outputExtent: outputExtent
             )
         }
@@ -1244,18 +1321,20 @@ final class CameraPipeline: NSObject, ObservableObject {
         _ image: CIImage,
         scaleX: CGFloat,
         scaleY: CGFloat,
+        alignment: BackgroundContentAlignment,
         outputExtent: CGRect
     ) -> CIImage {
         let scaledSize = CGSize(
             width: image.extent.width * scaleX,
             height: image.extent.height * scaleY
         )
+        let origin = alignment.origin(for: scaledSize, in: outputExtent)
 
         return image
             .transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
             .transformed(by: CGAffineTransform(
-                translationX: outputExtent.midX - scaledSize.width * 0.5,
-                y: outputExtent.midY - scaledSize.height * 0.5
+                translationX: origin.x,
+                y: origin.y
             ))
     }
 
@@ -1846,7 +1925,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         configuration.scalesToFit = true
         configuration.preservesAspectRatio = true
         configuration.ignoreShadowsSingleWindow = true
-        configuration.shouldBeOpaque = true
+        configuration.shouldBeOpaque = false
         configuration.backgroundColor = screenCaptureBackgroundColor
         return configuration
     }
