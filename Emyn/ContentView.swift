@@ -9,7 +9,43 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum ControlTab: String, CaseIterable, Identifiable {
+    case camera
+    case background
+    case appWindow
+    case functionKeys
+    case present
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .camera: return "Camera"
+        case .background: return "Background"
+        case .appWindow: return "App Window"
+        case .functionKeys: return "Function Keys"
+        case .present: return "Present"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .camera: return "camera.fill"
+        case .background: return "photo.fill"
+        case .appWindow: return "rectangle.on.rectangle"
+        case .functionKeys: return "keyboard"
+        case .present: return "rectangle.inset.filled.and.person.filled"
+        }
+    }
+}
+
 struct ContentView: View {
+    private static let windowCornerRadius: CGFloat = 30
+    private static let windowPadding: CGFloat = 24
+    private static let verticalSpacing: CGFloat = 16
+    private static let tabBarHeight: CGFloat = 58
+    private static let controlsPanelHeight: CGFloat = 220
+    private static let previewMinimumHeight: CGFloat = 180
     private static let softwareCursorBaseSize: CGFloat = 32
     private static let softwareCursorDefaultScale: CGFloat = 2
     private static let softwareCursorHotspot = CGPoint(x: 2, y: 2)
@@ -21,11 +57,13 @@ struct ContentView: View {
         return NSImage(named: "cursor")
     }()
 
-    @StateObject private var pipeline = CameraPipeline()
+    @ObservedObject private var pipeline: CameraPipeline
     @StateObject private var extensionInstaller = SystemExtensionInstaller()
     @StateObject private var windowBackgroundPicker = WindowBackgroundPickerModel()
     @StateObject private var windowControl = WindowControlCoordinator()
     @StateObject private var functionKeys = FunctionKeyController()
+    @State private var selectedTab: ControlTab = .camera
+    @State private var isPreviewCompact = false
     @State private var isWindowBackgroundPickerPresented = false
     @State private var isFunctionKeyConfigurationPresented = false
     @State private var previewNSView: SampleBufferPreviewView?
@@ -33,14 +71,29 @@ struct ContentView: View {
     @State private var cursorAttentionTask: Task<Void, Never>?
     @AppStorage("excludeFunctionKeysDuringWindowControl") private var excludeFunctionKeysDuringWindowControl = true
 
+    init(pipeline: CameraPipeline = CameraPipeline()) {
+        self.pipeline = pipeline
+    }
+
     var body: some View {
-        HStack(spacing: 0) {
-            controls
-            Divider()
-            preview
+        GeometryReader { proxy in
+            ScrollView(.vertical) {
+                VStack(spacing: Self.verticalSpacing) {
+                    previewPanel
+                        .frame(height: previewHeight(for: proxy.size))
+
+                    tabBar
+                        .frame(height: Self.tabBarHeight)
+
+                    controlsPanel
+                }
+                .padding(Self.windowPadding)
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: proxy.size.height, alignment: .top)
+            }
         }
-        .frame(minWidth: 980, minHeight: 640)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(minWidth: 1080, minHeight: 460)
+        .background(windowBackground)
         .onAppear {
             pipeline.refreshCameras()
             pipeline.start()
@@ -54,15 +107,15 @@ struct ContentView: View {
             pipeline.stop()
             pipeline.clearWindowBackground()
         }
-        .onChange(of: excludeFunctionKeysDuringWindowControl) { newValue in
+        .onChange(of: excludeFunctionKeysDuringWindowControl) { _, newValue in
             windowControl.setExcludeFunctionKeys(newValue)
         }
-        .onChange(of: pipeline.windowBackgroundFit) { _ in
+        .onChange(of: pipeline.windowBackgroundFit) { _, _ in
             deferViewUpdateMutation {
                 refreshWindowControlMapping()
             }
         }
-        .onChange(of: pipeline.windowBackgroundAlignment) { _ in
+        .onChange(of: pipeline.windowBackgroundAlignment) { _, _ in
             deferViewUpdateMutation {
                 refreshWindowControlMapping()
             }
@@ -96,39 +149,197 @@ struct ContentView: View {
         }
     }
 
-    private var controls: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 10) {
-                Image(systemName: "video.fill")
-                    .font(.title2)
-                    .foregroundStyle(.tint)
-                Text("Emyn")
-                    .font(.title2.weight(.semibold))
-            }
+    private var windowBackground: some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor)
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .controlBackgroundColor).opacity(0.56),
+                    Color.accentColor.opacity(0.16),
+                    Color(nsColor: .textBackgroundColor).opacity(0.74)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+        .ignoresSafeArea()
+    }
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Picker("Camera", selection: cameraSelection) {
-                        if pipeline.cameras.isEmpty {
-                            Text("No Camera").tag("")
-                        } else {
-                            ForEach(pipeline.cameras) { camera in
-                                Text(camera.name).tag(camera.id)
+    private var previewPanel: some View {
+        LiquidGlassSurface(cornerRadius: Self.windowCornerRadius) {
+            ZStack(alignment: .bottomLeading) {
+                VideoPreviewView(
+                    pipeline: pipeline,
+                    onViewReady: { view in
+                        DispatchQueue.main.async {
+                            if previewNSView !== view {
+                                previewNSView = view
                             }
                         }
                     }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
+                )
+                .background(.black)
 
-                    Button {
-                        pipeline.refreshCameras()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
+                if windowControl.isActive, let cursor = windowControl.cursorNormalised {
+                    GeometryReader { proxy in
+                        let region = windowControl.cursorRegionNormalised
+                        let outputCursor = CGPoint(
+                            x: pipeline.outputFlipHorizontal ? 1 - cursor.x : cursor.x,
+                            y: pipeline.outputFlipVertical ? 1 - cursor.y : cursor.y
+                        )
+                        let position = CGPoint(
+                            x: proxy.size.width * (region.minX + outputCursor.x * region.width),
+                            y: proxy.size.height * (region.minY + outputCursor.y * region.height)
+                        )
+                        softwareCursor(at: position)
                     }
-                    .help("Refresh cameras")
+                    .allowsHitTesting(false)
                 }
 
-                HStack {
+                HStack(spacing: 10) {
+                    Label("\(pipeline.measuredFramesPerSecond, specifier: "%.0f") fps", systemImage: "speedometer")
+                    Text("\(SharedFrameConfiguration.width)x\(SharedFrameConfiguration.height)")
+                }
+                .font(.caption.monospacedDigit())
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.black.opacity(0.62), in: Capsule())
+                .foregroundStyle(.white)
+                .padding(14)
+
+                VStack {
+                    HStack {
+                        Spacer()
+                        Button {
+                            isPreviewCompact.toggle()
+                        } label: {
+                            Image(systemName: isPreviewCompact ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help(isPreviewCompact ? "Expand preview" : "Shrink preview")
+                    }
+                    Spacer()
+                }
+                .padding(14)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: Self.windowCornerRadius - 3, style: .continuous))
+        }
+        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+    }
+
+    private var tabBar: some View {
+        HStack(spacing: 6) {
+            ForEach(ControlTab.allCases) { tab in
+                Button {
+                    selectedTab = tab
+                } label: {
+                    Label(tab.title, systemImage: tab.systemImage)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(selectedTab == tab ? Color.primary : Color.secondary)
+                .background {
+                    if selectedTab == tab {
+                        Capsule()
+                            .fill(.regularMaterial)
+                            .overlay {
+                                Capsule()
+                                    .strokeBorder(.white.opacity(0.22), lineWidth: 1)
+                            }
+                    }
+                }
+                .help(tab.title)
+            }
+        }
+        .padding(6)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+        }
+    }
+
+    private var controlsPanel: some View {
+        LiquidGlassSurface(cornerRadius: Self.windowCornerRadius) {
+            ScrollView {
+                tabContent
+                    .padding(22)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(height: Self.controlsPanelHeight)
+    }
+
+    private func previewHeight(for windowSize: CGSize) -> CGFloat {
+        let chromeHeight = Self.windowPadding * 2
+            + Self.verticalSpacing * 2
+            + Self.tabBarHeight
+            + Self.controlsPanelHeight
+        let availableHeight = windowSize.height - chromeHeight
+        let availableWidth = max(0, windowSize.width - Self.windowPadding * 2)
+        let maximumAspectHeight = availableWidth * 9.0 / 16.0
+        let fullHeight = max(
+            Self.previewMinimumHeight,
+            min(availableHeight, maximumAspectHeight)
+        )
+
+        if isPreviewCompact {
+            return max(Self.previewMinimumHeight, fullHeight * 0.5)
+        }
+
+        return fullHeight
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .camera:
+            cameraTab
+        case .background:
+            backgroundTab
+        case .appWindow:
+            appWindowTab
+        case .functionKeys:
+            functionKeysTab
+        case .present:
+            presentTab
+        }
+    }
+
+    private var cameraTab: some View {
+        HStack(alignment: .top, spacing: 22) {
+            controlSection("Camera", systemImage: "camera.fill") {
+                VStack(alignment: .leading, spacing: 12) {
+                    fieldLabel("Pick")
+                    HStack(spacing: 8) {
+                        Picker("Camera", selection: cameraSelection) {
+                            if pipeline.cameras.isEmpty {
+                                Text("No Camera").tag("")
+                            } else {
+                                ForEach(pipeline.cameras) { camera in
+                                    Text(camera.name).tag(camera.id)
+                                }
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity)
+
+                        Button {
+                            pipeline.refreshCameras()
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .help("Refresh cameras")
+                    }
+
                     Button {
                         pipeline.isRunning ? pipeline.stop() : pipeline.start()
                     } label: {
@@ -136,307 +347,241 @@ struct ContentView: View {
                             pipeline.isRunning ? "Stop" : "Start",
                             systemImage: pipeline.isRunning ? "stop.fill" : "play.fill"
                         )
+                        .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Text(pipeline.statusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    statusLine(pipeline.statusText)
                 }
             }
 
-            VStack(alignment: .leading, spacing: 12) {
-                Picker("Quality", selection: $pipeline.quality) {
-                    ForEach(SegmentationQuality.allCases) { quality in
-                        Text(quality.title).tag(quality)
-                    }
-                }
-                .pickerStyle(.segmented)
+            panelDivider
 
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Analysis")
-                        Spacer()
-                        Text(pipeline.analysisResolution.dimensionsTitle)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Picker("Analysis", selection: $pipeline.analysisResolution) {
-                        ForEach(SegmentationAnalysisResolution.allCases) { resolution in
-                            Text(resolution.title).tag(resolution)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .help("Resolution used for Vision person segmentation")
-                }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Smoothing")
-                        Spacer()
-                        Text(pipeline.temporalSmoothing, format: .percent.precision(.fractionLength(0)))
-                            .foregroundStyle(.secondary)
-                    }
-                    Slider(value: $pipeline.temporalSmoothing, in: 0.0...0.9, step: 0.05)
-                }
-
-                Stepper(
-                    "Reuse \(pipeline.maskReuseFrameCount) frame\(pipeline.maskReuseFrameCount == 1 ? "" : "s")",
-                    value: $pipeline.maskReuseFrameCount,
-                    in: 0...5
-                )
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Background")
-
-                    Picker("Background Mode", selection: backgroundModeSelection) {
-                        ForEach(BackgroundMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-
-                    if pipeline.backgroundMode == .blur {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text("Blur Radius")
-                                Spacer()
-                                Text("\(pipeline.backgroundBlurRadius, specifier: "%.0f") px")
-                                    .foregroundStyle(.secondary)
-                            }
-                            Slider(value: $pipeline.backgroundBlurRadius, in: 4...40, step: 1)
-                        }
-                    } else if pipeline.backgroundMode == .media {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 8) {
-                                Button {
-                                    chooseBackgroundMedia()
-                                } label: {
-                                    Label("Choose Media", systemImage: "photo.on.rectangle.angled")
-                                }
-                                .controlSize(.small)
-
-                                if pipeline.hasBackgroundMediaSelection {
-                                    Button {
-                                        pipeline.clearBackgroundMedia()
-                                    } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                    }
-                                    .controlSize(.small)
-                                    .help("Clear background media")
-                                }
-                            }
-
-                            Picker("Media Fit", selection: backgroundMediaFitSelection) {
-                                ForEach(BackgroundMediaFit.allCases) { fit in
-                                    Text(fit.title).tag(fit)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
-                            .controlSize(.small)
-
-                            backgroundAlignmentPicker(selection: backgroundMediaAlignmentSelection)
-
-                            Text(pipeline.selectedBackgroundMediaTitle ?? pipeline.backgroundMediaStatusText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                    } else {
-                        HStack(spacing: 8) {
-                            ForEach(BackgroundPreset.allCases) { preset in
-                                Button {
-                                    pipeline.backgroundPreset = preset
-                                } label: {
-                                    ZStack {
-                                        Circle()
-                                            .fill(Color(nsColor: preset.nsColor))
-                                        if preset == .transparent {
-                                            Image(systemName: "circle.dotted")
-                                                .font(.system(size: 20, weight: .semibold))
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-                                    .frame(width: 28, height: 28)
-                                    .overlay {
-                                        Circle()
-                                            .stroke(
-                                                pipeline.backgroundPreset == preset ? Color.accentColor : Color.clear,
-                                                lineWidth: 3
-                                            )
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                                .help(preset.title)
-                            }
-                        }
-                    }
-
+            controlSection("Virtual Camera", systemImage: "video.badge.plus") {
+                VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
                         Button {
-                            windowBackgroundPicker.refresh()
-                            isWindowBackgroundPickerPresented = true
+                            extensionInstaller.activate()
                         } label: {
-                            Label("Choose Windows", systemImage: "rectangle.on.rectangle")
+                            Label("Install", systemImage: "video.badge.plus")
                         }
-                        .controlSize(.small)
 
-                        if pipeline.hasWindowBackgroundSelection {
-                            Button {
-                                clearSelectedWindowBackground()
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                            }
-                            .controlSize(.small)
-                            .help("Clear window background")
+                        Button {
+                            extensionInstaller.deactivate()
+                        } label: {
+                            Label("Remove", systemImage: "video.badge.minus")
                         }
                     }
 
-                    if pipeline.hasWindowBackgroundSelection {
-                        Picker("Window Fit", selection: windowBackgroundFitSelection) {
+                    statusLine(
+                        extensionInstaller.statusText,
+                        color: extensionInstaller.needsUserApproval ? .orange : .secondary
+                    )
+                }
+            }
+        }
+    }
+
+    private var backgroundTab: some View {
+        HStack(alignment: .top, spacing: 22) {
+            controlSection("Background", systemImage: "square.stack.3d.down.right.fill") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle("Remove Background", isOn: $pipeline.backgroundRemovalEnabled)
+                        .toggleStyle(.checkbox)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle("Color", isOn: $pipeline.backgroundColorEnabled)
+                            .toggleStyle(.checkbox)
+                        Toggle("Background", isOn: $pipeline.backgroundBlurEnabled)
+                            .toggleStyle(.checkbox)
+                        Toggle("Media", isOn: $pipeline.backgroundMediaEnabled)
+                            .toggleStyle(.checkbox)
+                    }
+                }
+            }
+
+            if pipeline.backgroundColorEnabled {
+                panelDivider
+
+                controlSection("Color", systemImage: "paintpalette.fill") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        backgroundPresetButtons
+                        statusLine(pipeline.backgroundPreset.title)
+                    }
+                }
+            }
+
+            if pipeline.backgroundBlurEnabled {
+                panelDivider
+
+                controlSection("Background", systemImage: "camera.aperture") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        valueHeader("Blur", value: "\(String(format: "%.0f", pipeline.backgroundBlurRadius)) px")
+                        Slider(value: $pipeline.backgroundBlurRadius, in: 4...40, step: 1)
+                    }
+                }
+            }
+
+            if pipeline.backgroundMediaEnabled {
+                panelDivider
+
+                controlSection("Media", systemImage: "photo.on.rectangle.angled") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            Button {
+                                chooseBackgroundMedia()
+                            } label: {
+                                Label("Choose", systemImage: "plus")
+                            }
+
+                            if pipeline.hasBackgroundMediaSelection {
+                                Button {
+                                    pipeline.clearBackgroundMedia()
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                }
+                                .help("Clear background media")
+                            }
+                        }
+
+                        valueHeader("Blur Media", value: "\(String(format: "%.0f", pipeline.backgroundMediaBlurRadius)) px")
+                        Slider(value: $pipeline.backgroundMediaBlurRadius, in: 0...40, step: 1)
+
+                        Picker("Media Fit", selection: backgroundMediaFitSelection) {
                             ForEach(BackgroundMediaFit.allCases) { fit in
                                 Text(fit.title).tag(fit)
                             }
                         }
                         .labelsHidden()
                         .pickerStyle(.segmented)
-                        .controlSize(.small)
 
-                        backgroundAlignmentPicker(selection: windowBackgroundAlignmentSelection)
-                    }
+                        backgroundAlignmentPicker(selection: backgroundMediaAlignmentSelection)
 
-                    Text(pipeline.selectedWindowBackgroundTitle ?? pipeline.windowBackgroundStatusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-
-                    if let activeWindowBackgroundOption = pipeline.activeWindowBackgroundOption {
-                        Toggle(
-                            "Exclude Function Keys",
-                            isOn: $excludeFunctionKeysDuringWindowControl
-                        )
-                        .toggleStyle(.checkbox)
-                        .controlSize(.small)
-                        .help("Keep F1-F12 available outside the controlled window")
-
-                        Button {
-                            toggleWindowControl(for: activeWindowBackgroundOption)
-                        } label: {
-                            Label(
-                                windowControl.isActive ? "Stop Control" : "Control Window",
-                                systemImage: windowControl.isActive ? "xmark.circle" : "cursorarrow"
-                            )
-                        }
-                        .controlSize(.small)
-                        .disabled(previewNSView == nil)
-
-                        Text(windowControl.statusText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                        statusLine(pipeline.selectedBackgroundMediaTitle ?? pipeline.backgroundMediaStatusText)
                     }
                 }
             }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 10) {
-                Button {
-                    isFunctionKeyConfigurationPresented = true
-                } label: {
-                    Label("Function Keys", systemImage: "keyboard")
-                }
-
-                functionKeyActionButtons
-
-                Text(functionKeys.statusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Output")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                outputFlipButtons
-                ntscPresetPicker
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 10) {
-                Button {
-                    extensionInstaller.activate()
-                } label: {
-                    Label("Install Virtual Camera", systemImage: "video.badge.plus")
-                }
-
-                Button {
-                    extensionInstaller.deactivate()
-                } label: {
-                    Label("Remove Virtual Camera", systemImage: "video.badge.minus")
-                }
-
-                Text(extensionInstaller.statusText)
-                    .font(.caption)
-                    .foregroundStyle(extensionInstaller.needsUserApproval ? .orange : .secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 0)
         }
-        .padding(22)
-        .frame(width: 286)
     }
 
-    private var preview: some View {
-        ZStack(alignment: .bottomLeading) {
-            VideoPreviewView(
-                pipeline: pipeline,
-                onViewReady: { view in
-                    DispatchQueue.main.async {
-                        if previewNSView !== view {
-                            previewNSView = view
+    private var appWindowTab: some View {
+        HStack(alignment: .top, spacing: 22) {
+            controlSection("Select Windows", systemImage: "rectangle.badge.plus") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        Button {
+                            windowBackgroundPicker.refresh()
+                            isWindowBackgroundPickerPresented = true
+                        } label: {
+                            Label("Add", systemImage: "plus")
+                        }
+
+                        Button {
+                            clearSelectedWindowBackground()
+                        } label: {
+                            Label("Clear", systemImage: "xmark.circle")
+                        }
+                        .disabled(!pipeline.hasWindowBackgroundSelection)
+                    }
+
+                    statusLine(pipeline.selectedWindowBackgroundTitle ?? pipeline.windowBackgroundStatusText)
+                }
+            }
+
+            panelDivider
+
+            controlSection("Windows", systemImage: "list.bullet.rectangle") {
+                selectedWindowTable
+            }
+            .frame(minWidth: 390)
+
+            panelDivider
+
+            controlSection("Layout", systemImage: "arrow.up.left.and.arrow.down.right") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker("Window Fit", selection: windowBackgroundFitSelection) {
+                        ForEach(BackgroundMediaFit.allCases) { fit in
+                            Text(fit.title).tag(fit)
                         }
                     }
-                }
-            )
-                .background(.black)
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
 
-            if windowControl.isActive, let cursor = windowControl.cursorNormalised {
-                GeometryReader { proxy in
-                    let region = windowControl.cursorRegionNormalised
-                    let outputCursor = CGPoint(
-                        x: pipeline.outputFlipHorizontal ? 1 - cursor.x : cursor.x,
-                        y: pipeline.outputFlipVertical ? 1 - cursor.y : cursor.y
-                    )
-                    let position = CGPoint(
-                        x: proxy.size.width * (region.minX + outputCursor.x * region.width),
-                        y: proxy.size.height * (region.minY + outputCursor.y * region.height)
-                    )
-                    softwareCursor(at: position)
+                    backgroundAlignmentPicker(selection: windowBackgroundAlignmentSelection)
                 }
-                .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private var functionKeysTab: some View {
+        HStack(alignment: .top, spacing: 22) {
+            controlSection("Function Keys", systemImage: "keyboard") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Button {
+                        isFunctionKeyConfigurationPresented = true
+                    } label: {
+                        Label("Configure", systemImage: "slider.horizontal.3")
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    statusLine(functionKeys.statusText)
+                }
             }
 
-            HStack(spacing: 10) {
-                Label("\(pipeline.measuredFramesPerSecond, specifier: "%.0f") fps", systemImage: "speedometer")
-                Text("\(SharedFrameConfiguration.width)x\(SharedFrameConfiguration.height)")
+            panelDivider
+
+            controlSection("Current Configuration", systemImage: "list.bullet") {
+                functionKeyConfigurationSummary
             }
-            .font(.caption.monospacedDigit())
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(.black.opacity(0.62), in: Capsule())
-            .foregroundStyle(.white)
-            .padding(14)
+            .frame(minWidth: 360)
+
+            panelDivider
+
+            controlSection("Buttons", systemImage: "switch.2") {
+                functionKeyActionButtons
+            }
+        }
+    }
+
+    private var presentTab: some View {
+        HStack(alignment: .top, spacing: 22) {
+            controlSection("Output", systemImage: "display") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Resolution")
+                        Spacer()
+                        Text("\(SharedFrameConfiguration.width)x\(SharedFrameConfiguration.height)")
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+
+                    outputFlipButtons
+                }
+            }
+
+            panelDivider
+
+            controlSection("NTSC", systemImage: "tv") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle("Enabled", isOn: $pipeline.ntscEffectEnabled)
+                        .toggleStyle(.switch)
+
+                    ntscPresetPicker
+                }
+            }
+
+            panelDivider
+
+            controlSection("Function Buttons", systemImage: "switch.2") {
+                functionKeyActionButtons
+            }
+            .frame(minWidth: 300)
+
+            panelDivider
+
+            controlSection("Control Window", systemImage: "cursorarrow") {
+                windowControlControls
+            }
         }
     }
 
@@ -516,9 +661,39 @@ struct ContentView: View {
         .help(isActive ? "\(title) flip enabled" : "Flip output \(title.lowercased())")
     }
 
+    private var backgroundPresetButtons: some View {
+        HStack(spacing: 9) {
+            ForEach(BackgroundPreset.allCases) { preset in
+                Button {
+                    pipeline.backgroundPreset = preset
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(Color(nsColor: preset.nsColor))
+                        if preset == .transparent {
+                            Image(systemName: "circle.dotted")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(width: 30, height: 30)
+                    .overlay {
+                        Circle()
+                            .stroke(
+                                pipeline.backgroundPreset == preset ? Color.accentColor : Color.clear,
+                                lineWidth: 3
+                            )
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(preset.title)
+            }
+        }
+    }
+
     private func backgroundAlignmentPicker(selection: Binding<BackgroundContentAlignment>) -> some View {
         HStack(spacing: 8) {
-            Text("Alignment")
+            Text("Align")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -536,9 +711,7 @@ struct ContentView: View {
 
     private var ntscPresetPicker: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("NTSC Preset", systemImage: "tv")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            valueHeader("Preset", value: pipeline.ntscPreset.title)
 
             Picker("NTSC Preset", selection: ntscPresetSelection) {
                 ForEach(NtscPreset.allCases) { preset in
@@ -552,59 +725,119 @@ struct ContentView: View {
         }
     }
 
-    private var cameraSelection: Binding<String> {
-        Binding {
-            pipeline.selectedCameraID
-        } set: { newValue in
-            pipeline.selectedCameraID = newValue
+    private var selectedWindowTable: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Window")
+                Spacer()
+                Text("Size")
+                    .frame(width: 78, alignment: .trailing)
+                Text("")
+                    .frame(width: 96)
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+
+            Divider()
+
+            if pipeline.selectedWindowBackgroundOptions.isEmpty {
+                Label("No windows selected", systemImage: "rectangle.on.rectangle.slash")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 94)
+            } else {
+                ForEach(pipeline.selectedWindowBackgroundOptions) { option in
+                    selectedWindowRow(option)
+                    if option.id != pipeline.selectedWindowBackgroundOptions.last?.id {
+                        Divider()
+                    }
+                }
+            }
+        }
+        .background(.black.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
         }
     }
 
-    private var backgroundModeSelection: Binding<BackgroundMode> {
-        Binding {
-            pipeline.backgroundMode
-        } set: { newValue in
-            pipeline.backgroundMode = newValue
+    private func selectedWindowRow(_ option: WindowBackgroundOption) -> some View {
+        let index = windowIndex(for: option)
+        let isActive = pipeline.activeWindowBackgroundOption?.id == option.id
+
+        return HStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal")
+                .foregroundStyle(.tertiary)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(option.appName)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+
+                    if isActive {
+                        Image(systemName: "record.circle")
+                            .font(.caption)
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+
+                Text(option.windowTitle.isEmpty ? "Untitled Window" : option.windowTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 10)
+
+            Text("\(Int(option.frame.width.rounded()))x\(Int(option.frame.height.rounded()))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 78, alignment: .trailing)
+
+            HStack(spacing: 4) {
+                Button {
+                    moveWindowBackground(option, offset: -1)
+                } label: {
+                    Image(systemName: "chevron.up")
+                }
+                .disabled(index == nil || index == 0)
+                .help("Move up")
+
+                Button {
+                    moveWindowBackground(option, offset: 1)
+                } label: {
+                    Image(systemName: "chevron.down")
+                }
+                .disabled(index == nil || index == pipeline.selectedWindowBackgroundOptions.count - 1)
+                .help("Move down")
+
+                Button {
+                    removeSelectedWindowBackground(option)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .help("Remove window")
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .frame(width: 96, alignment: .trailing)
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
     }
 
-    private var backgroundMediaFitSelection: Binding<BackgroundMediaFit> {
-        Binding {
-            pipeline.backgroundMediaFit
-        } set: { newValue in
-            pipeline.backgroundMediaFit = newValue
-        }
-    }
+    private var functionKeyConfigurationSummary: some View {
+        let columns = [
+            GridItem(.adaptive(minimum: 112, maximum: 150), spacing: 8)
+        ]
 
-    private var backgroundMediaAlignmentSelection: Binding<BackgroundContentAlignment> {
-        Binding {
-            pipeline.backgroundMediaAlignment
-        } set: { newValue in
-            pipeline.backgroundMediaAlignment = newValue
-        }
-    }
-
-    private var windowBackgroundFitSelection: Binding<BackgroundMediaFit> {
-        Binding {
-            pipeline.windowBackgroundFit
-        } set: { newValue in
-            pipeline.windowBackgroundFit = newValue
-        }
-    }
-
-    private var windowBackgroundAlignmentSelection: Binding<BackgroundContentAlignment> {
-        Binding {
-            pipeline.windowBackgroundAlignment
-        } set: { newValue in
-            pipeline.windowBackgroundAlignment = newValue
-        }
-    }
-
-    private var ntscPresetSelection: Binding<NtscPreset> {
-        Binding {
-            pipeline.ntscPreset
-        } set: { newValue in
-            pipeline.ntscPreset = newValue
+        return LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+            ForEach(functionKeys.configuration.slots) { slot in
+                FunctionKeySummaryPill(slot: slot)
+            }
         }
     }
 
@@ -657,6 +890,133 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var windowControlControls: some View {
+        if let activeWindowBackgroundOption = pipeline.activeWindowBackgroundOption {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(
+                    "Exclude Function Keys",
+                    isOn: $excludeFunctionKeysDuringWindowControl
+                )
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+                .help("Keep F1-F12 available outside the controlled window")
+
+                Button {
+                    toggleWindowControl(for: activeWindowBackgroundOption)
+                } label: {
+                    Label(
+                        windowControl.isActive ? "Stop Control" : "Control Window",
+                        systemImage: windowControl.isActive ? "xmark.circle" : "cursorarrow"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(previewNSView == nil)
+
+                statusLine(windowControl.statusText)
+            }
+        } else {
+            Label("No app window selected", systemImage: "rectangle.on.rectangle.slash")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func controlSection<Content: View>(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: systemImage)
+                .font(.headline)
+                .lineLimit(1)
+
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var panelDivider: some View {
+        Divider()
+            .frame(minHeight: 160)
+            .opacity(0.7)
+    }
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+    }
+
+    private func valueHeader(_ title: String, value: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(value)
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption)
+    }
+
+    private func statusLine(_ text: String, color: Color = .secondary) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(color)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var cameraSelection: Binding<String> {
+        Binding {
+            pipeline.selectedCameraID
+        } set: { newValue in
+            pipeline.selectedCameraID = newValue
+        }
+    }
+
+    private var backgroundMediaFitSelection: Binding<BackgroundMediaFit> {
+        Binding {
+            pipeline.backgroundMediaFit
+        } set: { newValue in
+            pipeline.backgroundMediaFit = newValue
+        }
+    }
+
+    private var backgroundMediaAlignmentSelection: Binding<BackgroundContentAlignment> {
+        Binding {
+            pipeline.backgroundMediaAlignment
+        } set: { newValue in
+            pipeline.backgroundMediaAlignment = newValue
+        }
+    }
+
+    private var windowBackgroundFitSelection: Binding<BackgroundMediaFit> {
+        Binding {
+            pipeline.windowBackgroundFit
+        } set: { newValue in
+            pipeline.windowBackgroundFit = newValue
+        }
+    }
+
+    private var windowBackgroundAlignmentSelection: Binding<BackgroundContentAlignment> {
+        Binding {
+            pipeline.windowBackgroundAlignment
+        } set: { newValue in
+            pipeline.windowBackgroundAlignment = newValue
+        }
+    }
+
+    private var ntscPresetSelection: Binding<NtscPreset> {
+        Binding {
+            pipeline.ntscPreset
+        } set: { newValue in
+            pipeline.ntscPreset = newValue
+        }
+    }
+
     private func isFunctionKeyActionDisabled(_ action: FunctionKeyAction) -> Bool {
         if action == .cycleWindowBackground {
             return pipeline.selectedWindowBackgroundOptions.count < 2
@@ -698,6 +1058,32 @@ struct ContentView: View {
     private func clearSelectedWindowBackground() {
         windowControl.deactivate()
         pipeline.clearWindowBackground()
+    }
+
+    private func removeSelectedWindowBackground(_ option: WindowBackgroundOption) {
+        if pipeline.activeWindowBackgroundOption?.id == option.id {
+            windowControl.deactivate()
+        }
+
+        pipeline.removeWindowBackground(id: option.id)
+    }
+
+    private func moveWindowBackground(_ option: WindowBackgroundOption, offset: Int) {
+        guard let index = windowIndex(for: option) else { return }
+
+        let destination: Int
+        if offset < 0 {
+            destination = max(0, index + offset)
+        } else {
+            destination = min(pipeline.selectedWindowBackgroundOptions.count, index + offset + 1)
+        }
+
+        pipeline.moveWindowBackgrounds(from: IndexSet(integer: index), to: destination)
+        refreshWindowControlMapping()
+    }
+
+    private func windowIndex(for option: WindowBackgroundOption) -> Int? {
+        pipeline.selectedWindowBackgroundOptions.firstIndex { $0.id == option.id }
     }
 
     private func chooseBackgroundMedia() {
@@ -796,6 +1182,99 @@ struct ContentView: View {
                 try? await Task.sleep(nanoseconds: UInt64(stepDuration))
             }
         }
+    }
+}
+
+private struct LiquidGlassSurface<Content: View>: View {
+    let cornerRadius: CGFloat
+    @ViewBuilder let content: Content
+
+    init(cornerRadius: CGFloat, @ViewBuilder content: () -> Content) {
+        self.cornerRadius = cornerRadius
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(.white.opacity(0.20), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.18), radius: 24, y: 12)
+    }
+}
+
+private struct FunctionKeySummaryPill: View {
+    let slot: FunctionKeySlot
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(slot.key.title)
+                .font(.caption.weight(.bold).monospacedDigit())
+                .frame(width: 28, alignment: .leading)
+
+            Image(systemName: slot.action.systemImage)
+                .font(.caption)
+                .foregroundStyle(slot.action == .none ? Color.secondary : Color.accentColor)
+
+            Text(slot.action.title)
+                .font(.caption)
+                .lineLimit(1)
+                .minimumScaleFactor(0.76)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.black.opacity(0.08), in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(.white.opacity(0.10), lineWidth: 1)
+        }
+    }
+}
+
+struct BackgroundRemovalSettingsView: View {
+    @ObservedObject var pipeline: CameraPipeline
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("Background Removal", systemImage: "person.crop.rectangle")
+                .font(.title3.weight(.semibold))
+
+            Form {
+                Toggle("Remove Background", isOn: $pipeline.backgroundRemovalEnabled)
+
+                Picker("Quality", selection: $pipeline.quality) {
+                    ForEach(SegmentationQuality.allCases) { quality in
+                        Text(quality.title).tag(quality)
+                    }
+                }
+
+                Picker("Analysis", selection: $pipeline.analysisResolution) {
+                    ForEach(SegmentationAnalysisResolution.allCases) { resolution in
+                        Text("\(resolution.title) (\(resolution.dimensionsTitle))").tag(resolution)
+                    }
+                }
+
+                HStack {
+                    Text("Smoothing")
+                    Slider(value: $pipeline.temporalSmoothing, in: 0.0...0.9, step: 0.05)
+                    Text(pipeline.temporalSmoothing, format: .percent.precision(.fractionLength(0)))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, alignment: .trailing)
+                }
+
+                Stepper(
+                    "Reuse \(pipeline.maskReuseFrameCount) frame\(pipeline.maskReuseFrameCount == 1 ? "" : "s")",
+                    value: $pipeline.maskReuseFrameCount,
+                    in: 0...5
+                )
+            }
+            .formStyle(.grouped)
+        }
+        .padding(24)
+        .frame(width: 460)
     }
 }
 

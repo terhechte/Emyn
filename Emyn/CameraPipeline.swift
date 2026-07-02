@@ -74,22 +74,6 @@ enum SegmentationAnalysisResolution: String, CaseIterable, Identifiable {
     }
 }
 
-enum BackgroundMode: String, CaseIterable, Identifiable {
-    case replacement
-    case blur
-    case media
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .replacement: return "Color"
-        case .blur: return "Blur"
-        case .media: return "Media"
-        }
-    }
-}
-
 enum BackgroundMediaFit: String, CaseIterable, Identifiable {
     case fill
     case contain
@@ -257,13 +241,17 @@ enum NtscPreset: String, CaseIterable, Identifiable {
 }
 
 private struct ProcessingSettings {
+    var backgroundRemovalEnabled = true
     var quality: SegmentationQuality = .balanced
     var analysisResolution: SegmentationAnalysisResolution = .half
     var temporalSmoothing: Double = 0.72
     var maskReuseFrameCount: Int = 2
-    var backgroundMode: BackgroundMode = .replacement
+    var backgroundColorEnabled = true
+    var backgroundBlurEnabled = false
+    var backgroundMediaEnabled = false
     var backgroundBlurRadius: Double = 18
     var background: BackgroundPreset = .black
+    var backgroundMediaBlurRadius: Double = 0
     var backgroundMediaFit: BackgroundMediaFit = .fill
     var backgroundMediaAlignment: BackgroundContentAlignment = .middleCenter
     var windowBackgroundFit: BackgroundMediaFit = .fill
@@ -438,6 +426,16 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
+    @Published var backgroundRemovalEnabled = true {
+        didSet {
+            updateSettings { $0.backgroundRemovalEnabled = self.backgroundRemovalEnabled }
+            updateBackgroundMediaPlaybackState()
+            if !backgroundRemovalEnabled {
+                clearMask()
+            }
+        }
+    }
+
     @Published var quality: SegmentationQuality = .balanced {
         didSet {
             updateSettings { $0.quality = self.quality }
@@ -462,9 +460,17 @@ final class CameraPipeline: NSObject, ObservableObject {
         didSet { updateSettings { $0.maskReuseFrameCount = self.maskReuseFrameCount } }
     }
 
-    @Published var backgroundMode: BackgroundMode = .replacement {
+    @Published var backgroundColorEnabled = true {
+        didSet { updateSettings { $0.backgroundColorEnabled = self.backgroundColorEnabled } }
+    }
+
+    @Published var backgroundBlurEnabled = false {
+        didSet { updateSettings { $0.backgroundBlurEnabled = self.backgroundBlurEnabled } }
+    }
+
+    @Published var backgroundMediaEnabled = false {
         didSet {
-            updateSettings { $0.backgroundMode = self.backgroundMode }
+            updateSettings { $0.backgroundMediaEnabled = self.backgroundMediaEnabled }
             updateBackgroundMediaPlaybackState()
         }
     }
@@ -475,6 +481,10 @@ final class CameraPipeline: NSObject, ObservableObject {
 
     @Published var backgroundPreset: BackgroundPreset = .black {
         didSet { updateSettings { $0.background = self.backgroundPreset } }
+    }
+
+    @Published var backgroundMediaBlurRadius: Double = 0 {
+        didSet { updateSettings { $0.backgroundMediaBlurRadius = self.backgroundMediaBlurRadius } }
     }
 
     @Published var backgroundMediaFit: BackgroundMediaFit = .fill {
@@ -707,7 +717,7 @@ final class CameraPipeline: NSObject, ObservableObject {
             selectedBackgroundMediaTitle = url.deletingPathExtension().lastPathComponent
             selectedBackgroundMediaKind = kind
             backgroundMediaStatusText = "Using \(kind.title.lowercased()) background"
-            backgroundMode = .media
+            backgroundMediaEnabled = true
         } catch {
             backgroundMediaStatusText = error.localizedDescription
             setStatus("Background media failed: \(error.localizedDescription)")
@@ -719,10 +729,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         selectedBackgroundMediaTitle = nil
         selectedBackgroundMediaKind = nil
         backgroundMediaStatusText = "No media selected"
-
-        if backgroundMode == .media {
-            backgroundMode = .replacement
-        }
+        backgroundMediaEnabled = false
     }
 
     func selectWindowBackground(_ option: WindowBackgroundOption) {
@@ -740,6 +747,54 @@ final class CameraPipeline: NSObject, ObservableObject {
         selectedWindowBackgroundOptions = uniqueOptions
         activeWindowBackgroundIndex = 0
         startActiveWindowBackgroundCapture(statusPrefix: "Starting")
+    }
+
+    func removeWindowBackground(id: CGWindowID) {
+        guard let removedIndex = selectedWindowBackgroundOptions.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        let removedActiveWindow = activeWindowBackgroundIndex == removedIndex
+        selectedWindowBackgroundOptions.remove(at: removedIndex)
+
+        guard !selectedWindowBackgroundOptions.isEmpty else {
+            clearWindowBackground()
+            return
+        }
+
+        if removedActiveWindow {
+            activeWindowBackgroundIndex = min(removedIndex, selectedWindowBackgroundOptions.count - 1)
+            startActiveWindowBackgroundCapture(statusPrefix: "Switching to")
+        } else if let activeWindowBackgroundIndex, removedIndex < activeWindowBackgroundIndex {
+            self.activeWindowBackgroundIndex = activeWindowBackgroundIndex - 1
+        }
+    }
+
+    func moveWindowBackgrounds(from source: IndexSet, to destination: Int) {
+        guard !source.isEmpty else { return }
+
+        let activeID = activeWindowBackgroundOption?.id
+        let movingIndexes = source.sorted()
+        let movingOptions = movingIndexes.map { selectedWindowBackgroundOptions[$0] }
+        for index in movingIndexes.reversed() {
+            selectedWindowBackgroundOptions.remove(at: index)
+        }
+
+        let adjustedDestination = destination - movingIndexes.filter { $0 < destination }.count
+        let insertionIndex = max(0, min(adjustedDestination, selectedWindowBackgroundOptions.count))
+        selectedWindowBackgroundOptions.insert(contentsOf: movingOptions, at: insertionIndex)
+
+        if let activeID,
+           let newIndex = selectedWindowBackgroundOptions.firstIndex(where: { $0.id == activeID }) {
+            activeWindowBackgroundIndex = newIndex
+            let title = windowBackgroundTitle(
+                for: selectedWindowBackgroundOptions[newIndex],
+                index: newIndex,
+                total: selectedWindowBackgroundOptions.count
+            )
+            selectedWindowBackgroundTitle = title
+            windowBackgroundStatusText = "Using \(title)"
+        }
     }
 
     func clearWindowBackground() {
@@ -998,7 +1053,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     }
 
     private func updateBackgroundMediaPlaybackState() {
-        setBackgroundMediaPlayback(shouldPlay: isRunning && backgroundMode == .media)
+        setBackgroundMediaPlayback(shouldPlay: isRunning && backgroundRemovalEnabled && backgroundMediaEnabled)
     }
 
     private func setBackgroundMediaPlayback(shouldPlay: Bool) {
@@ -1102,7 +1157,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         let effects = settings.presentationEffects.resolved(at: renderTime)
 
         var renderedImage: CIImage
-        if let mask = currentMask() {
+        if settings.backgroundRemovalEnabled, let mask = currentMask() {
             let upscaledMask = upscale(mask: mask, to: outputExtent)
             let background = backgroundImage(
                 settings: settings,
@@ -1232,29 +1287,38 @@ final class CameraPipeline: NSObject, ObservableObject {
         foreground: CIImage,
         outputExtent: CGRect
     ) -> CIImage {
-        switch settings.backgroundMode {
-        case .blur:
+        var background = settings.backgroundColorEnabled
+            ? solidBackgroundImage(settings: settings, outputExtent: outputExtent)
+            : CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: outputExtent)
+
+        if settings.backgroundBlurEnabled {
             let radius = max(0, settings.backgroundBlurRadius)
-            return foreground
+            background = foreground
                 .clampedToExtent()
                 .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
                 .cropped(to: outputExtent)
-        case .media:
-            let backing = solidBackgroundImage(settings: settings, outputExtent: outputExtent)
-            guard let mediaImage = currentBackgroundMediaImage() else {
-                return backing
+        }
+
+        if settings.backgroundMediaEnabled,
+           var mediaImage = currentBackgroundMediaImage() {
+            let radius = max(0, settings.backgroundMediaBlurRadius)
+            if radius > 0 {
+                mediaImage = mediaImage
+                    .clampedToExtent()
+                    .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
+                    .cropped(to: mediaImage.extent)
             }
 
-            return fittedMediaBackgroundImage(
+            background = fittedMediaBackgroundImage(
                 mediaImage,
                 fit: settings.backgroundMediaFit,
                 alignment: settings.backgroundMediaAlignment,
                 outputExtent: outputExtent,
-                backing: backing
+                backing: background
             )
-        case .replacement:
-            return solidBackgroundImage(settings: settings, outputExtent: outputExtent)
         }
+
+        return background
     }
 
     private func solidBackgroundImage(
@@ -2004,7 +2068,7 @@ extension CameraPipeline: AVCaptureVideoDataOutputSampleBufferDelegate {
         let shouldRefreshMask = currentMask() == nil
             || frameCounter.isMultiple(of: UInt64(max(1, settings.maskReuseFrameCount + 1)))
 
-        if shouldRefreshMask {
+        if settings.backgroundRemovalEnabled && shouldRefreshMask {
             scheduleSegmentation(for: pixelBuffer)
         }
 

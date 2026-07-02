@@ -9,10 +9,15 @@ import SwiftUI
 
 @main
 struct EmynApp: App {
+    @StateObject private var pipeline = CameraPipeline()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(pipeline: pipeline)
         }
-        .windowResizability(.contentSize)
+
+        Settings {
+            BackgroundRemovalSettingsView(pipeline: pipeline)
+        }
     }
 }
