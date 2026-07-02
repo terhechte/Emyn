@@ -452,6 +452,7 @@
 				INFOPLIST_KEY_NSCameraUseContinuityCameraDeviceType = YES;
 				INFOPLIST_KEY_NSCameraUseExternalDeviceType = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSInputMonitoringUsageDescription = "Emyn listens for keyboard input while you are controlling a selected app window.";
 				INFOPLIST_KEY_NSSystemExtensionUsageDescription = "Emyn installs a virtual camera that makes the processed feed available to video conferencing apps.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -489,6 +490,7 @@
 				INFOPLIST_KEY_NSCameraUseContinuityCameraDeviceType = YES;
 				INFOPLIST_KEY_NSCameraUseExternalDeviceType = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSInputMonitoringUsageDescription = "Emyn listens for keyboard input while you are controlling a selected app window.";
 				INFOPLIST_KEY_NSSystemExtensionUsageDescription = "Emyn installs a virtual camera that makes the processed feed available to video conferencing apps.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

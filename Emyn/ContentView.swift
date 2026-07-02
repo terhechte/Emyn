@@ -58,13 +58,19 @@ struct ContentView: View {
             windowControl.setExcludeFunctionKeys(newValue)
         }
         .onChange(of: pipeline.windowBackgroundFit) { _ in
-            refreshWindowControlMapping()
+            deferViewUpdateMutation {
+                refreshWindowControlMapping()
+            }
         }
         .onChange(of: pipeline.windowBackgroundAlignment) { _ in
-            refreshWindowControlMapping()
+            deferViewUpdateMutation {
+                refreshWindowControlMapping()
+            }
         }
         .onReceive(windowControl.$cursorNormalised) { cursor in
-            pipeline.setWindowZoomCenter(cursor)
+            deferViewUpdateMutation {
+                pipeline.setWindowZoomCenter(cursor)
+            }
         }
         .sheet(isPresented: $isWindowBackgroundPickerPresented) {
             WindowBackgroundPickerView(
@@ -762,6 +768,13 @@ struct ContentView: View {
                 alignment: pipeline.windowBackgroundAlignment,
                 excludeFunctionKeys: excludeFunctionKeysDuringWindowControl
             )
+        }
+    }
+
+    private func deferViewUpdateMutation(_ action: @escaping @MainActor () -> Void) {
+        Task { @MainActor in
+            await Task.yield()
+            action()
         }
     }
 

@@ -7,10 +7,10 @@
 //! - Forwards all events to the target app pid via SkyLight SPI
 //! - Detects a triple-Option-key tap within a configurable window as an escape sequence
 
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
 };
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -216,9 +216,11 @@ unsafe extern "C" fn tap_callback(
     // ── Keyboard / modifier events ────────────────────────────────────────────
     if event_type == EV_KEY_DOWN || event_type == EV_KEY_UP || event_type == EV_FLAGS_CHANGED {
         let keycode = CGEventGetIntegerValueField(event, FIELD_KEYCODE);
+        let flags = CGEventGetFlags(event);
+        log_incoming_key_event(state, event_type, keycode, flags);
         debug_event_tap(format_args!(
             "key event_type={event_type} keycode={keycode} flags=0x{:x}",
-            CGEventGetFlags(event)
+            flags
         ));
 
         // Escape-sequence detection on flagsChanged (Option key down transitions).
@@ -323,8 +325,58 @@ unsafe extern "C" fn tap_callback(
     std::ptr::null_mut() // suppress original
 }
 
+fn log_incoming_key_event(state: &TapState, event_type: u32, keycode: i64, flags: u64) {
+    eprintln!(
+        "[window-control] incoming key event type={} keycode={} flags=0x{:x} secure_input={:?} target_pid={} target_window_id={:?}",
+        event_type_name(event_type),
+        keycode,
+        flags,
+        is_secure_event_input_enabled(),
+        state.target_pid,
+        state.target_window_id
+    );
+}
+
+fn event_type_name(event_type: u32) -> &'static str {
+    match event_type {
+        EV_KEY_DOWN => "keyDown",
+        EV_KEY_UP => "keyUp",
+        EV_FLAGS_CHANGED => "flagsChanged",
+        _ => "unknown",
+    }
+}
+
 fn is_function_key(keycode: i64) -> bool {
     VK_FUNCTION_KEYS.contains(&keycode)
+}
+
+type IsSecureEventInputEnabledFn = unsafe extern "C" fn() -> u8;
+
+fn is_secure_event_input_enabled() -> Option<bool> {
+    static SYM: OnceLock<Option<IsSecureEventInputEnabledFn>> = OnceLock::new();
+    let f = *SYM.get_or_init(|| {
+        let path = b"/System/Library/Frameworks/Carbon.framework/Frameworks/HIToolbox.framework/HIToolbox\0";
+        unsafe {
+            libc::dlopen(path.as_ptr() as *const c_char, libc::RTLD_LAZY | libc::RTLD_GLOBAL);
+        }
+
+        let ptr = unsafe {
+            libc::dlsym(
+                libc::RTLD_DEFAULT,
+                b"IsSecureEventInputEnabled\0".as_ptr() as *const c_char,
+            )
+        };
+
+        if ptr.is_null() {
+            None
+        } else {
+            Some(unsafe {
+                std::mem::transmute::<*mut c_void, IsSecureEventInputEnabledFn>(ptr)
+            })
+        }
+    });
+
+    f.map(|is_enabled| unsafe { is_enabled() != 0 })
 }
 
 unsafe fn create_forward_keyboard_event(event_type: u32, source_event: *mut c_void) -> *mut c_void {
@@ -636,6 +688,16 @@ impl EventTapSession {
         on_mouse_move: Arc<dyn Fn(f64, f64) + Send + Sync>,
         on_deactivate: Arc<dyn Fn() + Send + Sync>,
     ) -> anyhow::Result<Self> {
+        eprintln!(
+            "[window-control] starting event tap target_pid={} target_window_id={:?} secure_input={:?} exclude_function_keys={} attach_keyboard_auth_message={} event_mask=0x{:x}",
+            target_pid,
+            target_window_id,
+            is_secure_event_input_enabled(),
+            exclude_function_keys.load(Ordering::Relaxed),
+            attach_keyboard_auth_message,
+            event_mask()
+        );
+
         let state = Box::new(TapState {
             target_pid,
             target_window_id,

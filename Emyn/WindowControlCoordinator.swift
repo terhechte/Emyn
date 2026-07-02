@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Combine
+import Darwin
 import PlatformMacOSKit
 import ScreenCaptureKit
 
@@ -29,6 +30,8 @@ final class WindowControlCoordinator: ObservableObject {
             statusText = "Preview unavailable"
             return
         }
+        let secureInputOwner = Self.prepareForKeyboardCapture(in: view.window)
+        Self.logPermissionState(context: "activate requested", secureInputOwner: secureInputOwner)
         guard Self.isAccessibilityTrusted(prompt: true) else {
             statusText = "Grant Accessibility access, then try again"
             return
@@ -90,7 +93,11 @@ final class WindowControlCoordinator: ObservableObject {
         isActive = true
         cursorRegionNormalised = cursorRegion
         cursorNormalised = CGPoint(x: 0.5, y: 0.5)
-        statusText = "Controlling \(option.appName)"
+        if let secureInputOwner {
+            statusText = "Controlling \(option.appName); keyboard blocked by Secure Input: \(secureInputOwner.displayName)"
+        } else {
+            statusText = "Controlling \(option.appName)"
+        }
     }
 
     func deactivate() {
@@ -322,6 +329,98 @@ final class WindowControlCoordinator: ObservableObject {
         }
 
         return prompt && CGRequestListenEventAccess()
+    }
+
+    private struct SecureInputOwner {
+        var pid: pid_t
+        var displayName: String
+    }
+
+    private typealias HIToolboxVoidFunction = @convention(c) () -> Void
+
+    private static let disableSecureEventInput: HIToolboxVoidFunction? = {
+        let path = "/System/Library/Frameworks/Carbon.framework/Frameworks/HIToolbox.framework/HIToolbox"
+        guard let handle = dlopen(path, RTLD_LAZY | RTLD_GLOBAL),
+              let symbol = dlsym(handle, "DisableSecureEventInput") else {
+            return nil
+        }
+
+        return unsafeBitCast(symbol, to: HIToolboxVoidFunction.self)
+    }()
+
+    private static func prepareForKeyboardCapture(in window: NSWindow?) -> SecureInputOwner? {
+        releaseAppKeyboardFocus(in: window)
+
+        var owner = secureInputOwner()
+        guard owner?.pid == getpid() else {
+            return owner
+        }
+
+        guard let disableSecureEventInput else {
+            print("[window-control] own Secure Input is active, but DisableSecureEventInput is unavailable")
+            return owner
+        }
+
+        for attempt in 1...4 {
+            disableSecureEventInput()
+            owner = secureInputOwner()
+            print(
+                "[window-control] disabled own Secure Input attempt=\(attempt) " +
+                "remainingOwner=\(secureInputDescription(owner))"
+            )
+            if owner?.pid != getpid() {
+                break
+            }
+        }
+
+        return owner
+    }
+
+    private static func releaseAppKeyboardFocus(in window: NSWindow?) {
+        let windows = [window, NSApp.keyWindow]
+            .compactMap { $0 }
+            .reduce(into: [NSWindow]()) { uniqueWindows, candidate in
+                if !uniqueWindows.contains(where: { $0 === candidate }) {
+                    uniqueWindows.append(candidate)
+                }
+            }
+
+        for window in windows {
+            window.endEditing(for: nil)
+            window.makeFirstResponder(nil)
+        }
+    }
+
+    private static func logPermissionState(context: String, secureInputOwner: SecureInputOwner?) {
+        print(
+            "[window-control] \(context) ax=\(AXIsProcessTrusted()) " +
+            "inputMonitoring=\(CGPreflightListenEventAccess()) " +
+            "secureInputOwner=\(secureInputDescription(secureInputOwner)) " +
+            "bundle=\(Bundle.main.bundleIdentifier ?? "<none>") " +
+            "executable=\(Bundle.main.executablePath ?? "<none>")"
+        )
+    }
+
+    private static func secureInputDescription(_ owner: SecureInputOwner?) -> String {
+        owner.map {
+            "\($0.displayName) pid=\($0.pid)"
+        } ?? "none"
+    }
+
+    private static func secureInputOwner() -> SecureInputOwner? {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+              let pidNumber = session["kCGSSessionSecureInputPID"] as? NSNumber else {
+            return nil
+        }
+
+        let pid = pidNumber.int32Value
+        guard pid > 0 else { return nil }
+
+        let app = NSRunningApplication(processIdentifier: pid)
+        let displayName = app?.localizedName
+            ?? app?.bundleIdentifier
+            ?? "pid \(pid)"
+        return SecureInputOwner(pid: pid, displayName: displayName)
     }
 
     private static func openInputMonitoringSettings() {
