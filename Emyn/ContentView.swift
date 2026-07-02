@@ -57,6 +57,12 @@ struct ContentView: View {
         .onChange(of: excludeFunctionKeysDuringWindowControl) { newValue in
             windowControl.setExcludeFunctionKeys(newValue)
         }
+        .onChange(of: pipeline.windowBackgroundFit) { _ in
+            refreshWindowControlMapping()
+        }
+        .onChange(of: pipeline.windowBackgroundAlignment) { _ in
+            refreshWindowControlMapping()
+        }
         .onReceive(windowControl.$cursorNormalised) { cursor in
             pipeline.setWindowZoomCenter(cursor)
         }
@@ -660,9 +666,27 @@ struct ContentView: View {
             windowControl.activate(
                 option: option,
                 mappedTo: previewNSView,
+                fit: pipeline.windowBackgroundFit,
+                alignment: pipeline.windowBackgroundAlignment,
                 excludeFunctionKeys: excludeFunctionKeysDuringWindowControl
             )
         }
+    }
+
+    private func refreshWindowControlMapping() {
+        guard windowControl.isActive,
+              let activeWindowBackgroundOption = pipeline.activeWindowBackgroundOption else {
+            return
+        }
+
+        windowControl.deactivate()
+        windowControl.activate(
+            option: activeWindowBackgroundOption,
+            mappedTo: previewNSView,
+            fit: pipeline.windowBackgroundFit,
+            alignment: pipeline.windowBackgroundAlignment,
+            excludeFunctionKeys: excludeFunctionKeysDuringWindowControl
+        )
     }
 
     private func clearSelectedWindowBackground() {
@@ -734,6 +758,8 @@ struct ContentView: View {
             windowControl.activate(
                 option: activeOption,
                 mappedTo: previewNSView,
+                fit: pipeline.windowBackgroundFit,
+                alignment: pipeline.windowBackgroundAlignment,
                 excludeFunctionKeys: excludeFunctionKeysDuringWindowControl
             )
         }

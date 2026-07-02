@@ -17,7 +17,13 @@ final class WindowControlCoordinator: ObservableObject {
         height: SharedFrameConfiguration.height
     )
 
-    func activate(option: WindowBackgroundOption, mappedTo view: NSView?, excludeFunctionKeys: Bool) {
+    func activate(
+        option: WindowBackgroundOption,
+        mappedTo view: NSView?,
+        fit: BackgroundMediaFit,
+        alignment: BackgroundContentAlignment,
+        excludeFunctionKeys: Bool
+    ) {
         guard !isActive else { return }
         guard let view else {
             statusText = "Preview unavailable"
@@ -38,14 +44,17 @@ final class WindowControlCoordinator: ObservableObject {
             return
         }
 
-        let controlRect = Self.videoOutputRect(in: view)
-        guard let viewBounds = Self.cgScreenRect(for: controlRect, in: view),
-              let cursorRegion = Self.normalisedCGRect(for: controlRect, in: view) else {
+        guard let mapping = Self.controlMapping(
+            for: windowBounds,
+            fit: fit,
+            alignment: alignment,
+            in: view
+        ),
+              let viewBounds = Self.cgScreenRect(for: mapping.viewRect, in: view),
+              let cursorRegion = Self.normalisedCGRect(for: mapping.viewRect, in: view) else {
             statusText = "Preview unavailable"
             return
         }
-
-        let targetBounds = Self.visibleTargetRect(for: windowBounds)
 
         view.window?.orderFrontRegardless()
 
@@ -62,7 +71,10 @@ final class WindowControlCoordinator: ObservableObject {
         }
 
         do {
-            try captureSession.activate(viewBoundsInCGSpace: viewBounds, targetBoundsInCGSpace: targetBounds)
+            try captureSession.activate(
+                viewBoundsInCGSpace: viewBounds,
+                targetBoundsInCGSpace: mapping.targetRect
+            )
         } catch {
             statusText = error.localizedDescription
             cursorNormalised = nil
@@ -133,27 +145,144 @@ final class WindowControlCoordinator: ObservableObject {
         aspectFitRect(contentSize: outputSize, in: view.bounds)
     }
 
-    private static func visibleTargetRect(for windowBounds: CGRect) -> CGRect {
-        let outputAspect = outputSize.width / outputSize.height
-        let windowAspect = windowBounds.width / max(windowBounds.height, 1)
+    private struct ControlMapping {
+        var viewRect: CGRect
+        var targetRect: CGRect
+    }
 
-        if windowAspect > outputAspect {
-            let visibleWidth = windowBounds.height * outputAspect
-            return CGRect(
-                x: windowBounds.minX + (windowBounds.width - visibleWidth) * 0.5,
-                y: windowBounds.minY,
-                width: visibleWidth,
-                height: windowBounds.height
-            )
-        } else {
-            let visibleHeight = windowBounds.width / outputAspect
-            return CGRect(
-                x: windowBounds.minX,
-                y: windowBounds.minY + (windowBounds.height - visibleHeight) * 0.5,
-                width: windowBounds.width,
-                height: visibleHeight
-            )
+    private static func controlMapping(
+        for windowBounds: CGRect,
+        fit: BackgroundMediaFit,
+        alignment: BackgroundContentAlignment,
+        in view: NSView
+    ) -> ControlMapping? {
+        guard windowBounds.width > 0,
+              windowBounds.height > 0,
+              outputSize.width > 0,
+              outputSize.height > 0 else {
+            return nil
         }
+
+        let outputExtent = CGRect(origin: .zero, size: outputSize)
+        let fittedRect = fittedContentRect(
+            contentSize: windowBounds.size,
+            fit: fit,
+            alignment: alignment,
+            outputExtent: outputExtent
+        )
+
+        let outputControlRect: CGRect
+        let targetRect: CGRect
+        switch fit {
+        case .fill:
+            outputControlRect = outputExtent
+            targetRect = visibleTargetRect(
+                for: windowBounds,
+                fittedRect: fittedRect,
+                outputExtent: outputExtent
+            )
+        case .contain:
+            outputControlRect = fittedRect.intersection(outputExtent)
+            targetRect = windowBounds
+        case .scale:
+            outputControlRect = outputExtent
+            targetRect = windowBounds
+        }
+
+        guard !outputControlRect.isNull,
+              outputControlRect.width > 0,
+              outputControlRect.height > 0,
+              targetRect.width > 0,
+              targetRect.height > 0 else {
+            return nil
+        }
+
+        return ControlMapping(
+            viewRect: viewRect(forOutputRect: outputControlRect, in: view),
+            targetRect: targetRect
+        )
+    }
+
+    private static func fittedContentRect(
+        contentSize: CGSize,
+        fit: BackgroundMediaFit,
+        alignment: BackgroundContentAlignment,
+        outputExtent: CGRect
+    ) -> CGRect {
+        let scaleX: CGFloat
+        let scaleY: CGFloat
+        switch fit {
+        case .fill:
+            let scale = max(outputExtent.width / contentSize.width, outputExtent.height / contentSize.height)
+            scaleX = scale
+            scaleY = scale
+        case .contain:
+            let scale = min(outputExtent.width / contentSize.width, outputExtent.height / contentSize.height)
+            scaleX = scale
+            scaleY = scale
+        case .scale:
+            scaleX = outputExtent.width / contentSize.width
+            scaleY = outputExtent.height / contentSize.height
+        }
+
+        let scaledSize = CGSize(
+            width: contentSize.width * scaleX,
+            height: contentSize.height * scaleY
+        )
+        return CGRect(
+            origin: alignment.origin(for: scaledSize, in: outputExtent),
+            size: scaledSize
+        )
+    }
+
+    private static func visibleTargetRect(
+        for windowBounds: CGRect,
+        fittedRect: CGRect,
+        outputExtent: CGRect
+    ) -> CGRect {
+        let visibleOutputRect = fittedRect.intersection(outputExtent)
+        guard !visibleOutputRect.isNull,
+              fittedRect.width > 0,
+              fittedRect.height > 0 else {
+            return windowBounds
+        }
+
+        let scaleX = fittedRect.width / windowBounds.width
+        let scaleY = fittedRect.height / windowBounds.height
+        guard scaleX > 0, scaleY > 0 else {
+            return windowBounds
+        }
+
+        let visibleMinX = max(0, (visibleOutputRect.minX - fittedRect.minX) / scaleX)
+        let visibleMaxX = min(windowBounds.width, (visibleOutputRect.maxX - fittedRect.minX) / scaleX)
+        let visibleMinYFromBottom = max(0, (visibleOutputRect.minY - fittedRect.minY) / scaleY)
+        let visibleMaxYFromBottom = min(windowBounds.height, (visibleOutputRect.maxY - fittedRect.minY) / scaleY)
+
+        let visibleWidth = max(0, visibleMaxX - visibleMinX)
+        let visibleHeight = max(0, visibleMaxYFromBottom - visibleMinYFromBottom)
+        guard visibleWidth > 0, visibleHeight > 0 else {
+            return windowBounds
+        }
+
+        return CGRect(
+            x: windowBounds.minX + visibleMinX,
+            y: windowBounds.minY + windowBounds.height - visibleMaxYFromBottom,
+            width: visibleWidth,
+            height: visibleHeight
+        )
+    }
+
+    private static func viewRect(forOutputRect outputRect: CGRect, in view: NSView) -> CGRect {
+        let videoRect = videoOutputRect(in: view)
+        let scaleX = videoRect.width / outputSize.width
+        let scaleY = videoRect.height / outputSize.height
+
+        return CGRect(
+            x: videoRect.minX + outputRect.minX * scaleX,
+            y: videoRect.minY + outputRect.minY * scaleY,
+            width: outputRect.width * scaleX,
+            height: outputRect.height * scaleY
+        )
     }
 
     private static func aspectFitRect(contentSize: CGSize, in container: CGRect) -> CGRect {
