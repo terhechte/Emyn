@@ -355,9 +355,24 @@ final class CameraPipeline: NSObject, ObservableObject {
     @Published private(set) var statusText = "Idle"
     @Published private(set) var measuredFramesPerSecond: Double = 0
     @Published private(set) var selectedWindowBackgroundTitle: String?
+    @Published private(set) var selectedWindowBackgroundOptions: [WindowBackgroundOption] = []
+    @Published private(set) var activeWindowBackgroundIndex: Int?
     @Published private(set) var windowBackgroundStatusText = "Color background"
 
     var previewHandler: ((CMSampleBuffer) -> Void)?
+
+    var hasWindowBackgroundSelection: Bool {
+        !selectedWindowBackgroundOptions.isEmpty
+    }
+
+    var activeWindowBackgroundOption: WindowBackgroundOption? {
+        guard let activeWindowBackgroundIndex,
+              selectedWindowBackgroundOptions.indices.contains(activeWindowBackgroundIndex) else {
+            return nil
+        }
+
+        return selectedWindowBackgroundOptions[activeWindowBackgroundIndex]
+    }
 
     private let captureSession = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
@@ -500,20 +515,48 @@ final class CameraPipeline: NSObject, ObservableObject {
     }
 
     func selectWindowBackground(_ option: WindowBackgroundOption) {
+        selectWindowBackgrounds([option])
+    }
+
+    func selectWindowBackgrounds(_ options: [WindowBackgroundOption]) {
+        let uniqueOptions = Self.deduplicatedWindowOptions(options)
+        guard !uniqueOptions.isEmpty else {
+            clearWindowBackground()
+            return
+        }
+
         setWindowBackgroundVisible(true, animated: false)
-        selectedWindowBackgroundTitle = option.displayTitle
-        windowBackgroundStatusText = "Starting window background"
-        startWindowBackgroundCapture(window: option.window, title: option.displayTitle)
+        selectedWindowBackgroundOptions = uniqueOptions
+        activeWindowBackgroundIndex = 0
+        startActiveWindowBackgroundCapture(statusPrefix: "Starting")
     }
 
     func clearWindowBackground() {
         selectedWindowBackgroundTitle = nil
+        selectedWindowBackgroundOptions = []
+        activeWindowBackgroundIndex = nil
         windowBackgroundStatusText = "Color background"
         clearLatestWindowBackgroundPixelBuffer()
 
         screenCaptureQueue.async {
             self.stopWindowBackgroundStream()
         }
+    }
+
+    @discardableResult
+    func cycleWindowBackground() -> WindowBackgroundOption? {
+        guard selectedWindowBackgroundOptions.count > 1 else {
+            return activeWindowBackgroundOption
+        }
+
+        let currentIndex = activeWindowBackgroundIndex ?? 0
+        activeWindowBackgroundIndex = selectedWindowBackgroundOptions.index(after: currentIndex)
+        if activeWindowBackgroundIndex == selectedWindowBackgroundOptions.endIndex {
+            activeWindowBackgroundIndex = selectedWindowBackgroundOptions.startIndex
+        }
+
+        startActiveWindowBackgroundCapture(statusPrefix: "Switching to")
+        return activeWindowBackgroundOption
     }
 
     func setWindowBackgroundVisible(_ isVisible: Bool, animated: Bool) {
@@ -1253,6 +1296,24 @@ final class CameraPipeline: NSObject, ObservableObject {
         backgroundLock.unlock()
     }
 
+    private func startActiveWindowBackgroundCapture(statusPrefix: String) {
+        guard let activeWindowBackgroundOption,
+              let activeWindowBackgroundIndex else {
+            selectedWindowBackgroundTitle = nil
+            windowBackgroundStatusText = "Color background"
+            return
+        }
+
+        let title = windowBackgroundTitle(
+            for: activeWindowBackgroundOption,
+            index: activeWindowBackgroundIndex,
+            total: selectedWindowBackgroundOptions.count
+        )
+        selectedWindowBackgroundTitle = title
+        windowBackgroundStatusText = "\(statusPrefix) \(title)"
+        startWindowBackgroundCapture(window: activeWindowBackgroundOption.window, title: title)
+    }
+
     private func startWindowBackgroundCapture(window: SCWindow, title: String) {
         screenCaptureQueue.async {
             self.stopWindowBackgroundStream()
@@ -1289,6 +1350,25 @@ final class CameraPipeline: NSObject, ObservableObject {
                     self.windowBackgroundStatusText = error.localizedDescription
                 }
             }
+        }
+    }
+
+    private func windowBackgroundTitle(
+        for option: WindowBackgroundOption,
+        index: Int,
+        total: Int
+    ) -> String {
+        guard total > 1 else {
+            return option.displayTitle
+        }
+
+        return "\(option.displayTitle) (\(index + 1)/\(total))"
+    }
+
+    private static func deduplicatedWindowOptions(_ options: [WindowBackgroundOption]) -> [WindowBackgroundOption] {
+        var seenWindowIDs = Set<CGWindowID>()
+        return options.filter { option in
+            seenWindowIDs.insert(option.id).inserted
         }
     }
 

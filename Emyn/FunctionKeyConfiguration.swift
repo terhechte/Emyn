@@ -73,6 +73,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
     case toggleWindowZoom
     case drawAttentionToCursor
     case triggerConfetti
+    case cycleWindowBackground
 
     var id: String { rawValue }
 
@@ -86,6 +87,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         case .toggleWindowZoom: return "Zoom"
         case .drawAttentionToCursor: return "Cursor"
         case .triggerConfetti: return "Confetti"
+        case .cycleWindowBackground: return "Next Window"
         }
     }
 
@@ -99,6 +101,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         case .toggleWindowZoom: return "plus.magnifyingglass"
         case .drawAttentionToCursor: return "cursorarrow.rays"
         case .triggerConfetti: return "sparkles"
+        case .cycleWindowBackground: return "rectangle.stack"
         }
     }
 
@@ -107,6 +110,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
             .toggleWindowBackground,
             .togglePersonPosition,
             .toggleWindowZoom,
+            .cycleWindowBackground,
             .toggleWindowAndPerson,
             .drawAttentionToCursor,
             .triggerConfetti
@@ -115,7 +119,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
 
     var needsWindowBackground: Bool {
         switch self {
-        case .toggleWindowBackground, .toggleWindowZoom, .toggleWindowAndPerson:
+        case .toggleWindowBackground, .toggleWindowZoom, .toggleWindowAndPerson, .cycleWindowBackground:
             return true
         case .none, .togglePersonPosition, .toggleImageOverlay, .drawAttentionToCursor, .triggerConfetti:
             return false

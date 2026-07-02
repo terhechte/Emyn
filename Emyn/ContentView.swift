@@ -26,7 +26,6 @@ struct ContentView: View {
     @StateObject private var functionKeys = FunctionKeyController()
     @State private var isWindowBackgroundPickerPresented = false
     @State private var isFunctionKeyConfigurationPresented = false
-    @State private var selectedWindowBackgroundOption: WindowBackgroundOption?
     @State private var previewNSView: SampleBufferPreviewView?
     @State private var cursorScale = Self.softwareCursorDefaultScale
     @State private var cursorAttentionTask: Task<Void, Never>?
@@ -62,10 +61,10 @@ struct ContentView: View {
         .sheet(isPresented: $isWindowBackgroundPickerPresented) {
             WindowBackgroundPickerView(
                 model: windowBackgroundPicker,
-                onSelect: { option in
+                selectedWindowIDs: Set(pipeline.selectedWindowBackgroundOptions.map(\.id)),
+                onSelect: { options in
                     windowControl.deactivate()
-                    selectedWindowBackgroundOption = option
-                    pipeline.selectWindowBackground(option)
+                    pipeline.selectWindowBackgrounds(options)
                     isWindowBackgroundPickerPresented = false
                 },
                 onCancel: {
@@ -231,11 +230,11 @@ struct ContentView: View {
                             windowBackgroundPicker.refresh()
                             isWindowBackgroundPickerPresented = true
                         } label: {
-                            Label("Choose Window", systemImage: "rectangle.on.rectangle")
+                            Label("Choose Windows", systemImage: "rectangle.on.rectangle")
                         }
                         .controlSize(.small)
 
-                        if pipeline.selectedWindowBackgroundTitle != nil {
+                        if pipeline.hasWindowBackgroundSelection {
                             Button {
                                 clearSelectedWindowBackground()
                             } label: {
@@ -251,7 +250,7 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
 
-                    if pipeline.selectedWindowBackgroundTitle != nil, let selectedWindowBackgroundOption {
+                    if let activeWindowBackgroundOption = pipeline.activeWindowBackgroundOption {
                         Toggle(
                             "Exclude Function Keys",
                             isOn: $excludeFunctionKeysDuringWindowControl
@@ -261,7 +260,7 @@ struct ContentView: View {
                         .help("Keep F1-F12 available outside the controlled window")
 
                         Button {
-                            toggleWindowControl(for: selectedWindowBackgroundOption)
+                            toggleWindowControl(for: activeWindowBackgroundOption)
                         } label: {
                             Label(
                                 windowControl.isActive ? "Stop Control" : "Control Window",
@@ -494,7 +493,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(action.needsWindowBackground && pipeline.selectedWindowBackgroundTitle == nil)
+                .disabled(isFunctionKeyActionDisabled(action))
             }
 
             ForEach(imageSlots) { slot in
@@ -517,6 +516,14 @@ struct ContentView: View {
         }
     }
 
+    private func isFunctionKeyActionDisabled(_ action: FunctionKeyAction) -> Bool {
+        if action == .cycleWindowBackground {
+            return pipeline.selectedWindowBackgroundOptions.count < 2
+        }
+
+        return action.needsWindowBackground && !pipeline.hasWindowBackgroundSelection
+    }
+
     private func toggleWindowControl(for option: WindowBackgroundOption) {
         if windowControl.isActive {
             windowControl.deactivate()
@@ -531,7 +538,6 @@ struct ContentView: View {
 
     private func clearSelectedWindowBackground() {
         windowControl.deactivate()
-        selectedWindowBackgroundOption = nil
         pipeline.clearWindowBackground()
     }
 
@@ -566,6 +572,24 @@ struct ContentView: View {
             drawAttentionToCursor()
         case .triggerConfetti:
             pipeline.triggerConfetti()
+        case .cycleWindowBackground:
+            cycleWindowBackground()
+        }
+    }
+
+    private func cycleWindowBackground() {
+        guard pipeline.selectedWindowBackgroundOptions.count > 1 else { return }
+
+        let shouldResumeControl = windowControl.isActive
+        windowControl.deactivate()
+        let activeOption = pipeline.cycleWindowBackground()
+
+        if shouldResumeControl, let activeOption {
+            windowControl.activate(
+                option: activeOption,
+                mappedTo: previewNSView,
+                excludeFunctionKeys: excludeFunctionKeysDuringWindowControl
+            )
         }
     }
 
