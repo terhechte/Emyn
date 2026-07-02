@@ -584,6 +584,8 @@ final class CameraPipeline: NSObject, ObservableObject {
     private var outputPixelBufferPool: CVPixelBufferPool?
     private var analysisPixelBufferPool: CVPixelBufferPool?
     private var analysisPixelBufferPoolSize = CGSize(width: 0, height: 0)
+    private var maskPixelBufferPool: CVPixelBufferPool?
+    private var maskPixelBufferPoolSize = CGSize(width: 0, height: 0)
     private var outputFormatDescription: CMFormatDescription?
     private var frameCounter: UInt64 = 0
     private var segmentationInFlight = false
@@ -1079,7 +1081,9 @@ final class CameraPipeline: NSObject, ObservableObject {
 
         segmentationQueue.async {
             defer { self.finishSegmentation() }
-            self.performSegmentation(on: pixelBuffer)
+            autoreleasepool {
+                self.performSegmentation(on: pixelBuffer)
+            }
         }
     }
 
@@ -1107,8 +1111,7 @@ final class CameraPipeline: NSObject, ObservableObject {
                 return
             }
 
-            var newMask = CIImage(cvPixelBuffer: maskPixelBuffer)
-            newMask = normalizeExtent(newMask)
+            var newMask = normalizeExtent(CIImage(cvPixelBuffer: maskPixelBuffer))
 
             if let previousMask = currentMask(), previousMask.extent.size == newMask.extent.size {
                 let newWeight = max(0.08, min(1.0, 1.0 - settings.temporalSmoothing))
@@ -1118,7 +1121,11 @@ final class CameraPipeline: NSObject, ObservableObject {
                 ])
             }
 
-            setCurrentMask(newMask)
+            guard let materializedMask = materializedMaskImage(from: newMask) else {
+                return
+            }
+
+            setCurrentMask(materializedMask)
         } catch {
             setStatus(error.localizedDescription)
         }
@@ -1134,11 +1141,17 @@ final class CameraPipeline: NSObject, ObservableObject {
         renderLock.unlock()
 
         renderQueue.async {
-            self.render(pixelBuffer: pixelBuffer, timestamp: timestamp)
-            self.renderLock.lock()
-            self.renderInFlight = false
-            self.renderLock.unlock()
+            autoreleasepool {
+                self.render(pixelBuffer: pixelBuffer, timestamp: timestamp)
+            }
+            self.finishRender()
         }
+    }
+
+    private func finishRender() {
+        renderLock.lock()
+        renderInFlight = false
+        renderLock.unlock()
     }
 
     private func render(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
@@ -1770,6 +1783,45 @@ final class CameraPipeline: NSObject, ObservableObject {
         return pixelBuffer
     }
 
+    private func makeMaskPixelBuffer(size: CGSize) -> CVPixelBuffer? {
+        let width = Int(size.width.rounded())
+        let height = Int(size.height.rounded())
+        guard width > 0, height > 0 else { return nil }
+
+        let integralSize = CGSize(width: width, height: height)
+        if maskPixelBufferPool == nil || maskPixelBufferPoolSize != integralSize {
+            maskPixelBufferPool = Self.makePixelBufferPool(
+                width: width,
+                height: height,
+                pixelFormat: kCVPixelFormatType_OneComponent8,
+                bitmapCompatible: false
+            )
+            maskPixelBufferPoolSize = integralSize
+        }
+
+        guard let maskPixelBufferPool else { return nil }
+        var pixelBuffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, maskPixelBufferPool, &pixelBuffer)
+        return pixelBuffer
+    }
+
+    private func materializedMaskImage(from mask: CIImage) -> CIImage? {
+        let normalizedMask = normalizeExtent(mask)
+        let maskSize = normalizedMask.extent.size
+        guard let pixelBuffer = makeMaskPixelBuffer(size: maskSize) else {
+            return nil
+        }
+
+        ciContext.render(
+            normalizedMask,
+            to: pixelBuffer,
+            bounds: CGRect(origin: .zero, size: maskSize),
+            colorSpace: nil
+        )
+
+        return CIImage(cvPixelBuffer: pixelBuffer)
+    }
+
     private func makeSampleBuffer(from pixelBuffer: CVPixelBuffer, timestamp: CMTime) -> CMSampleBuffer? {
         guard let outputFormatDescription else { return nil }
 
@@ -1792,16 +1844,24 @@ final class CameraPipeline: NSObject, ObservableObject {
         return sampleBuffer
     }
 
-    private static func makePixelBufferPool(width: Int, height: Int, pixelFormat: OSType) -> CVPixelBufferPool? {
-        let attributes: [String: Any] = [
+    private static func makePixelBufferPool(
+        width: Int,
+        height: Int,
+        pixelFormat: OSType,
+        bitmapCompatible: Bool = true
+    ) -> CVPixelBufferPool? {
+        var attributes: [String: Any] = [
             kCVPixelBufferWidthKey as String: width,
             kCVPixelBufferHeightKey as String: height,
             kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
             kCVPixelBufferMetalCompatibilityKey as String: true,
-            kCVPixelBufferCGImageCompatibilityKey as String: true,
-            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ]
+
+        if bitmapCompatible {
+            attributes[kCVPixelBufferCGImageCompatibilityKey as String] = true
+            attributes[kCVPixelBufferCGBitmapContextCompatibilityKey as String] = true
+        }
 
         var pool: CVPixelBufferPool?
         CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes as CFDictionary, &pool)
