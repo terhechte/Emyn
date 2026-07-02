@@ -33,6 +33,11 @@ final class WindowControlCoordinator: ObservableObject {
             statusText = "Grant Accessibility access, then try again"
             return
         }
+        guard Self.isInputMonitoringTrusted(prompt: true) else {
+            Self.openInputMonitoringSettings()
+            statusText = "Grant Input Monitoring access, then try again"
+            return
+        }
         guard let pid = option.window.owningApplication?.processID else {
             statusText = "Target app unavailable"
             return
@@ -309,5 +314,21 @@ final class WindowControlCoordinator: ObservableObject {
         ] as CFDictionary
 
         return AXIsProcessTrustedWithOptions(options)
+    }
+
+    private static func isInputMonitoringTrusted(prompt: Bool) -> Bool {
+        if CGPreflightListenEventAccess() {
+            return true
+        }
+
+        return prompt && CGRequestListenEventAccess()
+    }
+
+    private static func openInputMonitoringSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") else {
+            return
+        }
+
+        NSWorkspace.shared.open(url)
     }
 }

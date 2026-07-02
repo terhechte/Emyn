@@ -37,9 +37,17 @@ extern "C" {
 
     fn CGEventCreateCopy(event: *mut c_void) -> *mut c_void;
 
+    fn CGEventCreateKeyboardEvent(
+        source: *const c_void,
+        virtual_key: u16,
+        key_down: bool,
+    ) -> *mut c_void;
+
     fn CGEventGetLocation(event: *mut c_void) -> RawPoint;
 
     fn CGEventSetLocation(event: *mut c_void, x: f64, y: f64);
+
+    fn CGEventSetFlags(event: *mut c_void, flags: u64);
 
     fn CGEventPostToPid(pid: i32, event: *mut c_void);
 
@@ -151,6 +159,7 @@ pub struct TapState {
     pub escape_taps: u32,
     pub escape_interval_ms: u64,
     pub exclude_function_keys: Arc<AtomicBool>,
+    pub attach_keyboard_auth_message: bool,
     pub on_mouse_move: Arc<dyn Fn(f64, f64) + Send + Sync>,
     pub on_deactivate: Arc<dyn Fn() + Send + Sync>,
     // Mutable escape-detection state; only touched from the tap callback (main run-loop thread).
@@ -195,6 +204,10 @@ unsafe extern "C" fn tap_callback(
     // ── Keyboard / modifier events ────────────────────────────────────────────
     if event_type == EV_KEY_DOWN || event_type == EV_KEY_UP || event_type == EV_FLAGS_CHANGED {
         let keycode = CGEventGetIntegerValueField(event, FIELD_KEYCODE);
+        debug_event_tap(format_args!(
+            "key event_type={event_type} keycode={keycode} flags=0x{:x}",
+            CGEventGetFlags(event)
+        ));
 
         // Escape-sequence detection on flagsChanged (Option key down transitions).
         if event_type == EV_FLAGS_CHANGED {
@@ -215,16 +228,11 @@ unsafe extern "C" fn tap_callback(
                     if times.len() as u32 >= state.escape_taps {
                         times.clear();
                         // Forward the event first, then schedule deactivation.
-                        let copy = CGEventCreateCopy(event);
-                        if !copy.is_null() {
-                            if !crate::input::skylight::post_to_pid(
-                                state.target_pid as libc::pid_t,
-                                copy,
-                                true,
-                            ) {
-                                CGEventPostToPid(state.target_pid, copy);
-                            }
-                            CFRelease(copy);
+                        let forward_event = create_forward_keyboard_event(event_type, event);
+                        if !forward_event.is_null() {
+                            stamp_keyboard_routing_fields(state, forward_event);
+                            post_keyboard_event_to_target(state, forward_event);
+                            CFRelease(forward_event);
                         }
                         // Trigger deactivation on next run-loop tick.
                         let deactivate = Arc::clone(&state.on_deactivate);
@@ -243,13 +251,12 @@ unsafe extern "C" fn tap_callback(
             return event;
         }
 
-        // Forward the keyboard event to the target via SkyLight (with auth message).
-        let copy = CGEventCreateCopy(event);
-        if !copy.is_null() {
-            if !crate::input::skylight::post_to_pid(state.target_pid as libc::pid_t, copy, true) {
-                CGEventPostToPid(state.target_pid, copy);
-            }
-            CFRelease(copy);
+        // Forward the keyboard event to the target via SkyLight.
+        let forward_event = create_forward_keyboard_event(event_type, event);
+        if !forward_event.is_null() {
+            stamp_keyboard_routing_fields(state, forward_event);
+            post_keyboard_event_to_target(state, forward_event);
+            CFRelease(forward_event);
         }
         return std::ptr::null_mut(); // suppress original
     }
@@ -308,6 +315,106 @@ unsafe extern "C" fn tap_callback(
 
 fn is_function_key(keycode: i64) -> bool {
     VK_FUNCTION_KEYS.contains(&keycode)
+}
+
+unsafe fn create_forward_keyboard_event(event_type: u32, source_event: *mut c_void) -> *mut c_void {
+    let keycode = CGEventGetIntegerValueField(source_event, FIELD_KEYCODE);
+    if !(0..=u16::MAX as i64).contains(&keycode) {
+        return std::ptr::null_mut();
+    }
+
+    let key_down = match event_type {
+        EV_KEY_DOWN => true,
+        EV_KEY_UP => false,
+        EV_FLAGS_CHANGED => modifier_key_is_down(keycode, CGEventGetFlags(source_event)),
+        _ => return std::ptr::null_mut(),
+    };
+
+    let event = CGEventCreateKeyboardEvent(std::ptr::null(), keycode as u16, key_down);
+    if !event.is_null() {
+        CGEventSetFlags(event, CGEventGetFlags(source_event));
+    }
+    event
+}
+
+unsafe fn post_keyboard_event_to_target(state: &TapState, event: *mut c_void) {
+    post_keyboard_event_to_target_values(
+        state.target_pid,
+        state.target_window_id,
+        state.attach_keyboard_auth_message,
+        event,
+    );
+}
+
+unsafe fn post_keyboard_event_to_target_values(
+    target_pid: i32,
+    target_window_id: Option<u32>,
+    attach_keyboard_auth_message: bool,
+    event: *mut c_void,
+) {
+    if let Some(window_id) = target_window_id {
+        let result = crate::input::skylight::with_menu_shortcut_activation(
+            target_pid as libc::pid_t,
+            window_id,
+            || {
+                post_keyboard_event_once(target_pid, attach_keyboard_auth_message, event);
+                Ok(())
+            },
+        );
+
+        if result.is_ok() {
+            debug_event_tap(format_args!(
+                "keyboard posted with front/restore pid={} window_id={} result={:?}",
+                target_pid, window_id, result
+            ));
+            return;
+        }
+
+        debug_event_tap(format_args!(
+            "keyboard front/restore failed pid={} window_id={} result={:?}",
+            target_pid, window_id, result
+        ));
+    }
+
+    post_keyboard_event_once(target_pid, attach_keyboard_auth_message, event);
+}
+
+unsafe fn post_keyboard_event_once(
+    target_pid: i32,
+    attach_keyboard_auth_message: bool,
+    event: *mut c_void,
+) {
+    let skylight_posted = crate::input::skylight::post_to_pid(
+        target_pid as libc::pid_t,
+        event,
+        attach_keyboard_auth_message,
+    );
+    debug_event_tap(format_args!(
+        "keyboard post pid={} auth={} skylight_posted={}",
+        target_pid, attach_keyboard_auth_message, skylight_posted
+    ));
+    if !skylight_posted {
+        CGEventPostToPid(target_pid, event);
+    }
+}
+
+fn debug_event_tap(args: std::fmt::Arguments<'_>) {
+    if std::env::var_os("EMYN_EVENT_TAP_DEBUG").is_some() {
+        eprintln!("[event_tap] {args}");
+    }
+}
+
+fn modifier_key_is_down(keycode: i64, flags: u64) -> bool {
+    let mask = match keycode {
+        55 | 54 => 0x0010_0000, // command
+        56 | 60 => 0x0002_0000, // shift
+        58 | 61 => FLAG_ALTERNATE,
+        59 | 62 => 0x0004_0000, // control
+        63 => 0x0080_0000,      // fn
+        _ => 0,
+    };
+
+    mask != 0 && flags & mask != 0
 }
 
 fn is_mouse_down(event_type: u32) -> bool {
@@ -433,6 +540,55 @@ unsafe fn stamp_mouse_routing_fields(
     }
 }
 
+unsafe fn stamp_keyboard_routing_fields(state: &TapState, event: *mut c_void) {
+    stamp_keyboard_routing_fields_for_target(state.target_pid, state.target_window_id, event);
+}
+
+unsafe fn stamp_keyboard_routing_fields_for_target(
+    target_pid: i32,
+    target_window_id: Option<u32>,
+    event: *mut c_void,
+) {
+    crate::input::skylight::set_integer_field(event, 40, target_pid as i64);
+
+    let Some(window_id) = target_window_id else {
+        return;
+    };
+
+    let window_id = window_id as i64;
+    crate::input::skylight::set_integer_field(event, 51, window_id);
+    crate::input::skylight::set_integer_field(event, 91, window_id);
+    crate::input::skylight::set_integer_field(event, 92, window_id);
+}
+
+pub fn forward_keyboard_event_for_testing(
+    target_pid: i32,
+    target_window_id: Option<u32>,
+    attach_keyboard_auth_message: bool,
+    keycode: u16,
+    key_down: bool,
+    flags: u64,
+) -> anyhow::Result<()> {
+    unsafe {
+        let event = CGEventCreateKeyboardEvent(std::ptr::null(), keycode, key_down);
+        if event.is_null() {
+            anyhow::bail!("CGEventCreateKeyboardEvent failed");
+        }
+
+        CGEventSetFlags(event, flags);
+        stamp_keyboard_routing_fields_for_target(target_pid, target_window_id, event);
+        post_keyboard_event_to_target_values(
+            target_pid,
+            target_window_id,
+            attach_keyboard_auth_message,
+            event,
+        );
+        CFRelease(event);
+    }
+
+    Ok(())
+}
+
 // ── Public session type ───────────────────────────────────────────────────────
 
 /// An active event-tap session. Dropping this stops the tap and restores the cursor.
@@ -467,6 +623,7 @@ impl EventTapSession {
         escape_taps: u32,
         escape_interval_ms: u64,
         exclude_function_keys: Arc<AtomicBool>,
+        attach_keyboard_auth_message: bool,
         on_mouse_move: Arc<dyn Fn(f64, f64) + Send + Sync>,
         on_deactivate: Arc<dyn Fn() + Send + Sync>,
     ) -> anyhow::Result<Self> {
@@ -484,6 +641,7 @@ impl EventTapSession {
             escape_taps,
             escape_interval_ms,
             exclude_function_keys,
+            attach_keyboard_auth_message,
             on_mouse_move,
             on_deactivate,
             alt_press_times: Mutex::new(Vec::new()),

@@ -121,6 +121,7 @@ impl CaptureSession {
                 q.push_back(CaptureEvent::Deactivated);
             }
         });
+        let attach_keyboard_auth_message = should_attach_keyboard_auth_message(self.target_pid);
 
         if let Some(window_id) = target_window_id {
             let _ = crate::input::skylight::activate_without_raise(
@@ -143,6 +144,7 @@ impl CaptureSession {
             escape_taps,
             escape_interval_ms,
             Arc::clone(&self.exclude_function_keys),
+            attach_keyboard_auth_message,
             on_mouse_move,
             on_deactivate,
         )
@@ -153,6 +155,10 @@ impl CaptureSession {
         *tap_guard = Some(session);
         Ok(())
     }
+}
+
+fn should_attach_keyboard_auth_message(pid: i32) -> bool {
+    !crate::terminal::is_terminal_pid(pid)
 }
 
 #[uniffi::export]
@@ -283,6 +289,30 @@ impl CaptureSession {
     /// Returns whether F1-F12 are currently excluded from forwarding.
     pub fn exclude_function_keys(&self) -> bool {
         self.exclude_function_keys.load(Ordering::Relaxed)
+    }
+
+    /// Test hook for the Swift harness: deliver a keyboard event through the
+    /// same target-window posting path used by the event tap. This does not
+    /// synthesize a source key event; hardware keyboard capture is still owned
+    /// by the event tap.
+    pub fn forward_key_for_testing(
+        &self,
+        target_window_id: Option<u32>,
+        keycode: u16,
+        key_down: bool,
+        flags: u64,
+    ) -> Result<(), CaptureError> {
+        crate::event_tap::forward_keyboard_event_for_testing(
+            self.target_pid,
+            target_window_id,
+            should_attach_keyboard_auth_message(self.target_pid),
+            keycode,
+            key_down,
+            flags,
+        )
+        .map_err(|e| CaptureError::TapCreationFailed {
+            message: e.to_string(),
+        })
     }
 
     /// Target PID this session controls.

@@ -56,6 +56,15 @@ public final class WindowCaptureSession {
         stopPolling()
     }
 
+    public func forwardKeyForTesting(keyCode: CGKeyCode, keyDown: Bool, flags: CGEventFlags = []) throws {
+        try session.forwardKeyForTesting(
+            targetWindowId: targetWindowID,
+            keycode: UInt16(keyCode),
+            keyDown: keyDown,
+            flags: flags.rawValue
+        )
+    }
+
     private func startPolling() {
         stopPolling()
         // kCFRunLoopCommonModes on the Rust side, so this must match to keep
