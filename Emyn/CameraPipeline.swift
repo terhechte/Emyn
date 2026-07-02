@@ -180,12 +180,35 @@ private struct AnimatedScalar {
     }
 }
 
+private struct ConfettiBurst {
+    static let duration: CFTimeInterval = 3.2
+
+    let startTime: CFTimeInterval
+    let seed: UInt64
+
+    func isActive(at time: CFTimeInterval) -> Bool {
+        time >= startTime && time - startTime <= Self.duration
+    }
+
+    func progress(at time: CFTimeInterval) -> CGFloat? {
+        let elapsed = time - startTime
+        guard elapsed <= Self.duration else {
+            return nil
+        }
+
+        return CGFloat(max(0, elapsed) / Self.duration)
+    }
+}
+
 private struct PresentationEffects {
     var windowBackgroundOpacity = AnimatedScalar(value: 1)
     var personScale = AnimatedScalar(value: 1)
     var windowZoom = AnimatedScalar(value: 1)
     var windowZoomCenter = CGPoint(x: 0.5, y: 0.5)
     var activeImageOverlayPathsByID: [String: String] = [:]
+    var confettiBursts: [ConfettiBurst] = []
+
+    private var nextConfettiBurstID = 0
 
     mutating func setWindowBackgroundVisible(_ isVisible: Bool, animated: Bool, at time: CFTimeInterval) {
         let opacity = isVisible ? 1.0 : 0.0
@@ -236,6 +259,22 @@ private struct PresentationEffects {
         )
     }
 
+    mutating func triggerConfetti(at time: CFTimeInterval) {
+        confettiBursts.removeAll { !$0.isActive(at: time) }
+        nextConfettiBurstID += 1
+
+        let timeSeed = UInt64(max(0, time * 1_000))
+        let seed = (UInt64(nextConfettiBurstID) &* 0x9E37_79B9_7F4A_7C15) ^ timeSeed
+        confettiBursts.append(ConfettiBurst(
+            startTime: time,
+            seed: seed
+        ))
+
+        if confettiBursts.count > 4 {
+            confettiBursts.removeFirst(confettiBursts.count - 4)
+        }
+    }
+
     func resolved(at time: CFTimeInterval) -> ResolvedPresentationEffects {
         ResolvedPresentationEffects(
             windowBackgroundOpacity: windowBackgroundOpacity.value(at: time),
@@ -244,7 +283,8 @@ private struct PresentationEffects {
             windowZoomCenter: windowZoomCenter,
             activeImageOverlayPaths: activeImageOverlayPathsByID
                 .sorted { $0.key.localizedStandardCompare($1.key) == .orderedAscending }
-                .map(\.value)
+                .map(\.value),
+            confettiBursts: confettiBursts.filter { $0.isActive(at: time) }
         )
     }
 }
@@ -255,6 +295,7 @@ private struct ResolvedPresentationEffects {
     var windowZoom: Double
     var windowZoomCenter: CGPoint
     var activeImageOverlayPaths: [String]
+    var confettiBursts: [ConfettiBurst]
 }
 
 final class CameraPipeline: NSObject, ObservableObject {
@@ -336,6 +377,16 @@ final class CameraPipeline: NSObject, ObservableObject {
     private let segmentationRequest = VNGeneratePersonSegmentationRequest()
     private let frameWriter: SharedFrameWriter?
     private static let screenCaptureBackgroundColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+    private static let confettiParticleCount = 144
+    private static let confettiParticleScale: CGFloat = 1.3
+    private static let confettiPalette: [(red: CGFloat, green: CGFloat, blue: CGFloat)] = [
+        (0.98, 0.20, 0.30),
+        (1.00, 0.70, 0.12),
+        (0.13, 0.75, 0.38),
+        (0.10, 0.48, 0.95),
+        (0.70, 0.25, 0.95),
+        (0.08, 0.78, 0.82)
+    ]
 
     private var settings = ProcessingSettings()
     private var latestMask: CIImage?
@@ -520,6 +571,13 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
+    func triggerConfetti() {
+        let now = CACurrentMediaTime()
+        updateSettings { settings in
+            settings.presentationEffects.triggerConfetti(at: now)
+        }
+    }
+
     func restart() {
         stop()
         captureQueue.asyncAfter(deadline: .now() + 0.25) {
@@ -667,7 +725,8 @@ final class CameraPipeline: NSObject, ObservableObject {
         let outputExtent = CGRect(origin: .zero, size: outputSize)
         let foreground = aspectFillImage(from: pixelBuffer, targetSize: outputSize)
         let settings = currentSettings()
-        let effects = settings.presentationEffects.resolved(at: CACurrentMediaTime())
+        let renderTime = CACurrentMediaTime()
+        let effects = settings.presentationEffects.resolved(at: renderTime)
 
         var renderedImage: CIImage
         if let mask = currentMask() {
@@ -694,6 +753,12 @@ final class CameraPipeline: NSObject, ObservableObject {
             effects.activeImageOverlayPaths,
             over: renderedImage,
             outputExtent: outputExtent
+        )
+        renderedImage = applyConfetti(
+            effects.confettiBursts,
+            over: renderedImage,
+            outputExtent: outputExtent,
+            at: renderTime
         )
         renderedImage = applyOutputFlips(
             to: renderedImage,
@@ -902,6 +967,120 @@ final class CameraPipeline: NSObject, ObservableObject {
                 .composited(over: currentImage)
                 .cropped(to: outputExtent)
         }
+    }
+
+    private func applyConfetti(
+        _ bursts: [ConfettiBurst],
+        over image: CIImage,
+        outputExtent: CGRect,
+        at time: CFTimeInterval
+    ) -> CIImage {
+        guard !bursts.isEmpty else {
+            return image.cropped(to: outputExtent)
+        }
+
+        return bursts.reduce(image.cropped(to: outputExtent)) { currentImage, burst in
+            guard let progress = burst.progress(at: time) else {
+                return currentImage
+            }
+
+            return applyConfettiBurst(
+                burst,
+                progress: progress,
+                over: currentImage,
+                outputExtent: outputExtent
+            )
+        }
+    }
+
+    private func applyConfettiBurst(
+        _ burst: ConfettiBurst,
+        progress: CGFloat,
+        over image: CIImage,
+        outputExtent: CGRect
+    ) -> CIImage {
+        var renderedImage = image.cropped(to: outputExtent)
+        let width = outputExtent.width
+        let height = outputExtent.height
+
+        for index in 0..<Self.confettiParticleCount {
+            let delay = Self.confettiRandom(seed: burst.seed, index: index, salt: 0) * 0.22
+            let localProgress = max(0, min(1, (progress - delay) / max(0.001, 1 - delay)))
+            guard localProgress > 0 else { continue }
+
+            let fadeIn = min(1, localProgress / 0.08)
+            let fadeOut = min(1, (1 - localProgress) / 0.18)
+            let alpha = fadeIn * fadeOut * 0.96
+            guard alpha > 0.01 else { continue }
+
+            let startX = outputExtent.minX + width * (
+                0.5 + (Self.confettiRandom(seed: burst.seed, index: index, salt: 1) - 0.5) * 0.42
+            )
+            let laneSpread = width * (
+                0.35 + Self.confettiRandom(seed: burst.seed, index: index, salt: 2) * 0.55
+            )
+            let drift = (
+                Self.confettiRandom(seed: burst.seed, index: index, salt: 3) - 0.5
+            ) * laneSpread * localProgress
+            let phase = Self.confettiRandom(seed: burst.seed, index: index, salt: 4) * .pi * 2
+            let sway = CGFloat(sin(Double(localProgress * 10 + phase))) * (
+                12 + Self.confettiRandom(seed: burst.seed, index: index, salt: 5) * 24
+            )
+            let speed = 0.78 + Self.confettiRandom(seed: burst.seed, index: index, salt: 6) * 0.58
+            let fall = CGFloat(pow(Double(localProgress), 1.22)) * (height + 190) * speed
+            let x = startX + drift + sway
+            let y = outputExtent.maxY + 80 - fall
+
+            guard y > outputExtent.minY - 40,
+                  y < outputExtent.maxY + 100,
+                  x > outputExtent.minX - 60,
+                  x < outputExtent.maxX + 60 else {
+                continue
+            }
+
+            let particleWidth = (7 + Self.confettiRandom(seed: burst.seed, index: index, salt: 7) * 10)
+                * Self.confettiParticleScale
+            let particleHeight = (3 + Self.confettiRandom(seed: burst.seed, index: index, salt: 8) * 8)
+                * Self.confettiParticleScale
+            let spinDirection: CGFloat = Self.confettiRandom(seed: burst.seed, index: index, salt: 9) < 0.5 ? -1 : 1
+            let angle = (
+                Self.confettiRandom(seed: burst.seed, index: index, salt: 10) * .pi * 2
+            ) + localProgress * (4 + Self.confettiRandom(seed: burst.seed, index: index, salt: 11) * 10) * spinDirection
+            let color = Self.confettiPalette[
+                Int(Self.confettiRandom(seed: burst.seed, index: index, salt: 12) * CGFloat(Self.confettiPalette.count))
+                    % Self.confettiPalette.count
+            ]
+            let particle = CIImage(color: CIColor(
+                red: color.red,
+                green: color.green,
+                blue: color.blue,
+                alpha: alpha
+            ))
+            .cropped(to: CGRect(
+                x: -particleWidth * 0.5,
+                y: -particleHeight * 0.5,
+                width: particleWidth,
+                height: particleHeight
+            ))
+            .transformed(by: CGAffineTransform(translationX: x, y: y).rotated(by: angle))
+
+            renderedImage = particle.composited(over: renderedImage)
+        }
+
+        return renderedImage.cropped(to: outputExtent)
+    }
+
+    private static func confettiRandom(seed: UInt64, index: Int, salt: UInt64) -> CGFloat {
+        var value = seed
+        value &+= UInt64(index) &* 0x9E37_79B9_7F4A_7C15
+        value &+= salt &* 0xBF58_476D_1CE4_E5B9
+        value ^= value >> 30
+        value &*= 0xBF58_476D_1CE4_E5B9
+        value ^= value >> 27
+        value &*= 0x94D0_49BB_1331_11EB
+        value ^= value >> 31
+
+        return CGFloat(Double(value & 0xFFFF_FFFF) / Double(UInt32.max))
     }
 
     private func applyOutputFlips(

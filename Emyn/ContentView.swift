@@ -564,6 +564,8 @@ struct ContentView: View {
             pipeline.toggleWindowZoom()
         case .drawAttentionToCursor:
             drawAttentionToCursor()
+        case .triggerConfetti:
+            pipeline.triggerConfetti()
         }
     }
 
