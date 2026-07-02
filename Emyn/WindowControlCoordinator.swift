@@ -13,10 +13,14 @@ final class WindowControlCoordinator: ObservableObject {
     @Published private(set) var cursorRegionNormalised = CGRect(x: 0, y: 0, width: 1, height: 1)
 
     private var session: WindowCaptureSession?
+    private var secureInputPollTask: Task<Void, Never>?
     private static let outputSize = CGSize(
         width: SharedFrameConfiguration.width,
         height: SharedFrameConfiguration.height
     )
+    private static let secureKeyboardEntryMessage =
+        "keyboard forwarding unavailable: another app has Secure Keyboard Entry enabled " +
+        "(e.g. a password field, 1Password, or a terminal's Secure Keyboard Entry)"
 
     func activate(
         option: WindowBackgroundOption,
@@ -30,8 +34,8 @@ final class WindowControlCoordinator: ObservableObject {
             statusText = "Preview unavailable"
             return
         }
-        let secureInputOwner = Self.prepareForKeyboardCapture(in: view.window)
-        Self.logPermissionState(context: "activate requested", secureInputOwner: secureInputOwner)
+        let secureInputEnabled = Self.prepareForKeyboardCapture(in: view.window)
+        Self.logPermissionState(context: "activate requested", secureInputEnabled: secureInputEnabled)
         guard Self.isAccessibilityTrusted(prompt: true) else {
             statusText = "Grant Accessibility access, then try again"
             return
@@ -93,11 +97,8 @@ final class WindowControlCoordinator: ObservableObject {
         isActive = true
         cursorRegionNormalised = cursorRegion
         cursorNormalised = CGPoint(x: 0.5, y: 0.5)
-        if let secureInputOwner {
-            statusText = "Controlling \(option.appName); keyboard blocked by Secure Input: \(secureInputOwner.displayName)"
-        } else {
-            statusText = "Controlling \(option.appName)"
-        }
+        updateActiveStatus(appName: option.appName, secureInputEnabled: Self.isSecureEventInputEnabled())
+        startSecureInputPolling(appName: option.appName)
     }
 
     func deactivate() {
@@ -115,11 +116,39 @@ final class WindowControlCoordinator: ObservableObject {
     }
 
     private func finishDeactivation(status: String) {
+        secureInputPollTask?.cancel()
+        secureInputPollTask = nil
         session = nil
         isActive = false
         cursorNormalised = nil
         cursorRegionNormalised = CGRect(x: 0, y: 0, width: 1, height: 1)
         statusText = status
+    }
+
+    private func updateActiveStatus(appName: String, secureInputEnabled: Bool) {
+        if secureInputEnabled {
+            statusText = "Controlling \(appName); \(Self.secureKeyboardEntryMessage)"
+        } else {
+            statusText = "Controlling \(appName)"
+        }
+    }
+
+    private func startSecureInputPolling(appName: String) {
+        secureInputPollTask?.cancel()
+        secureInputPollTask = Task { @MainActor [weak self] in
+            var lastSecureInputEnabled: Bool?
+            while !Task.isCancelled {
+                let secureInputEnabled = Self.isSecureEventInputEnabled()
+                if lastSecureInputEnabled != secureInputEnabled {
+                    lastSecureInputEnabled = secureInputEnabled
+                    self?.updateActiveStatus(
+                        appName: appName,
+                        secureInputEnabled: secureInputEnabled
+                    )
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
     }
 
     private static func cgScreenRect(for rect: CGRect, in view: NSView) -> CGRect? {
@@ -331,49 +360,21 @@ final class WindowControlCoordinator: ObservableObject {
         return prompt && CGRequestListenEventAccess()
     }
 
-    private struct SecureInputOwner {
-        var pid: pid_t
-        var displayName: String
-    }
+    private typealias HIToolboxBooleanFunction = @convention(c) () -> UInt8
 
-    private typealias HIToolboxVoidFunction = @convention(c) () -> Void
-
-    private static let disableSecureEventInput: HIToolboxVoidFunction? = {
+    private static let isSecureEventInputEnabledFunction: HIToolboxBooleanFunction? = {
         let path = "/System/Library/Frameworks/Carbon.framework/Frameworks/HIToolbox.framework/HIToolbox"
         guard let handle = dlopen(path, RTLD_LAZY | RTLD_GLOBAL),
-              let symbol = dlsym(handle, "DisableSecureEventInput") else {
+              let symbol = dlsym(handle, "IsSecureEventInputEnabled") else {
             return nil
         }
 
-        return unsafeBitCast(symbol, to: HIToolboxVoidFunction.self)
+        return unsafeBitCast(symbol, to: HIToolboxBooleanFunction.self)
     }()
 
-    private static func prepareForKeyboardCapture(in window: NSWindow?) -> SecureInputOwner? {
+    private static func prepareForKeyboardCapture(in window: NSWindow?) -> Bool {
         releaseAppKeyboardFocus(in: window)
-
-        var owner = secureInputOwner()
-        guard owner?.pid == getpid() else {
-            return owner
-        }
-
-        guard let disableSecureEventInput else {
-            print("[window-control] own Secure Input is active, but DisableSecureEventInput is unavailable")
-            return owner
-        }
-
-        for attempt in 1...4 {
-            disableSecureEventInput()
-            owner = secureInputOwner()
-            print(
-                "[window-control] disabled own Secure Input attempt=\(attempt) " +
-                "remainingOwner=\(secureInputDescription(owner))"
-            )
-            if owner?.pid != getpid() {
-                break
-            }
-        }
-
-        return owner
+        return isSecureEventInputEnabled()
     }
 
     private static func releaseAppKeyboardFocus(in window: NSWindow?) {
@@ -391,36 +392,22 @@ final class WindowControlCoordinator: ObservableObject {
         }
     }
 
-    private static func logPermissionState(context: String, secureInputOwner: SecureInputOwner?) {
+    private static func logPermissionState(context: String, secureInputEnabled: Bool) {
         print(
             "[window-control] \(context) ax=\(AXIsProcessTrusted()) " +
             "inputMonitoring=\(CGPreflightListenEventAccess()) " +
-            "secureInputOwner=\(secureInputDescription(secureInputOwner)) " +
+            "secureInput=\(secureInputEnabled) " +
             "bundle=\(Bundle.main.bundleIdentifier ?? "<none>") " +
             "executable=\(Bundle.main.executablePath ?? "<none>")"
         )
     }
 
-    private static func secureInputDescription(_ owner: SecureInputOwner?) -> String {
-        owner.map {
-            "\($0.displayName) pid=\($0.pid)"
-        } ?? "none"
-    }
-
-    private static func secureInputOwner() -> SecureInputOwner? {
-        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
-              let pidNumber = session["kCGSSessionSecureInputPID"] as? NSNumber else {
-            return nil
+    private static func isSecureEventInputEnabled() -> Bool {
+        guard let isSecureEventInputEnabledFunction else {
+            return false
         }
 
-        let pid = pidNumber.int32Value
-        guard pid > 0 else { return nil }
-
-        let app = NSRunningApplication(processIdentifier: pid)
-        let displayName = app?.localizedName
-            ?? app?.bundleIdentifier
-            ?? "pid \(pid)"
-        return SecureInputOwner(pid: pid, displayName: displayName)
+        return isSecureEventInputEnabledFunction() != 0
     }
 
     private static func openInputMonitoringSettings() {
