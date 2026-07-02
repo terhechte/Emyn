@@ -6,6 +6,7 @@ import CoreMedia
 import CoreVideo
 import Foundation
 import Metal
+import PlatformMacOSKit
 import QuartzCore
 import ScreenCaptureKit
 import Vision
@@ -131,6 +132,30 @@ enum BackgroundPreset: String, CaseIterable, Identifiable {
     }
 }
 
+enum NtscPreset: String, CaseIterable, Identifiable {
+    case low
+    case medium
+    case hard
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .hard: return "Hard"
+        }
+    }
+
+    var platformPreset: PlatformMacOSKit.NtscEffectPreset {
+        switch self {
+        case .low: return .low
+        case .medium: return .medium
+        case .hard: return .hard
+        }
+    }
+}
+
 private struct ProcessingSettings {
     var quality: SegmentationQuality = .balanced
     var analysisResolution: SegmentationAnalysisResolution = .half
@@ -141,6 +166,8 @@ private struct ProcessingSettings {
     var background: BackgroundPreset = .black
     var outputFlipHorizontal = false
     var outputFlipVertical = false
+    var ntscEffectEnabled = false
+    var ntscPreset: NtscPreset = .medium
     var presentationEffects = PresentationEffects()
 }
 
@@ -351,6 +378,14 @@ final class CameraPipeline: NSObject, ObservableObject {
         didSet { updateSettings { $0.outputFlipVertical = self.outputFlipVertical } }
     }
 
+    @Published var ntscEffectEnabled = false {
+        didSet { updateSettings { $0.ntscEffectEnabled = self.ntscEffectEnabled } }
+    }
+
+    @Published var ntscPreset: NtscPreset = .medium {
+        didSet { updateSettings { $0.ntscPreset = self.ntscPreset } }
+    }
+
     @Published private(set) var isRunning = false
     @Published private(set) var statusText = "Idle"
     @Published private(set) var measuredFramesPerSecond: Double = 0
@@ -413,6 +448,8 @@ final class CameraPipeline: NSObject, ObservableObject {
     private var segmentationInFlight = false
     private var renderInFlight = false
     private var renderedFrameCounter = 0
+    private var ntscEffectFrameCounter: UInt64 = 0
+    private var didReportNtscEffectError = false
     private var lastFPSUpdate = CACurrentMediaTime()
     private var windowBackgroundStream: SCStream?
     private var latestWindowBackgroundPixelBuffer: CVPixelBuffer?
@@ -621,6 +658,10 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
+    func toggleNtscEffect() {
+        ntscEffectEnabled.toggle()
+    }
+
     func restart() {
         stop()
         captureQueue.asyncAfter(deadline: .now() + 0.25) {
@@ -816,6 +857,10 @@ final class CameraPipeline: NSObject, ObservableObject {
             bounds: outputExtent,
             colorSpace: colorSpace
         )
+
+        if settings.ntscEffectEnabled {
+            applyNtscEffect(to: outputPixelBuffer, preset: settings.ntscPreset)
+        }
 
         frameWriter?.publish(pixelBuffer: outputPixelBuffer, presentationTime: timestamp)
         if let sampleBuffer = makeSampleBuffer(from: outputPixelBuffer, timestamp: timestamp) {
@@ -1149,6 +1194,73 @@ final class CameraPipeline: NSObject, ObservableObject {
         return croppedImage
             .transformed(by: transform)
             .cropped(to: outputExtent)
+    }
+
+    private func applyNtscEffect(to pixelBuffer: CVPixelBuffer, preset: NtscPreset) {
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else {
+            return
+        }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        guard width > 0, height > 0 else { return }
+
+        let compactBytesPerRow = width * SharedFrameConfiguration.bytesPerPixel
+        let frameByteCount = compactBytesPerRow * height
+        guard CVPixelBufferLockBaseAddress(pixelBuffer, []) == kCVReturnSuccess else {
+            return
+        }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            return
+        }
+
+        let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        guard sourceBytesPerRow >= compactBytesPerRow else {
+            return
+        }
+
+        var frameData = Data(count: frameByteCount)
+        frameData.withUnsafeMutableBytes { destination in
+            guard let destinationBaseAddress = destination.baseAddress else { return }
+            for row in 0..<height {
+                memcpy(
+                    destinationBaseAddress.advanced(by: row * compactBytesPerRow),
+                    baseAddress.advanced(by: row * sourceBytesPerRow),
+                    compactBytesPerRow
+                )
+            }
+        }
+
+        do {
+            let processedData = try applyNtscEffectBgrx(
+                width: UInt32(width),
+                height: UInt32(height),
+                frameNum: ntscEffectFrameCounter,
+                preset: preset.platformPreset,
+                pixels: frameData
+            )
+            ntscEffectFrameCounter &+= 1
+            didReportNtscEffectError = false
+            guard processedData.count == frameByteCount else { return }
+
+            processedData.withUnsafeBytes { source in
+                guard let sourceBaseAddress = source.baseAddress else { return }
+                for row in 0..<height {
+                    memcpy(
+                        baseAddress.advanced(by: row * sourceBytesPerRow),
+                        sourceBaseAddress.advanced(by: row * compactBytesPerRow),
+                        compactBytesPerRow
+                    )
+                }
+            }
+        } catch {
+            ntscEffectFrameCounter &+= 1
+            guard !didReportNtscEffectError else { return }
+            didReportNtscEffectError = true
+            setStatus("NTSC effect failed: \(error.localizedDescription)")
+        }
     }
 
     private func cachedOverlayImage(for imagePath: String) -> CIImage? {

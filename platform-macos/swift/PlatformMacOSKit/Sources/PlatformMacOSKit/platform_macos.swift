@@ -525,6 +525,24 @@ fileprivate struct FfiConverterString: FfiConverter {
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterData: FfiConverterRustBuffer {
+    typealias SwiftType = Data
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        let len: Int32 = try readInt(&buf)
+        return Data(try readBytes(&buf, count: Int(len)))
+    }
+
+    public static func write(_ value: Data, into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        writeBytes(&buf, value)
+    }
+}
+
 
 
 
@@ -1053,6 +1071,150 @@ extension CaptureEvent: Equatable, Hashable {}
 
 
 
+
+public enum NtscEffectError {
+
+    
+    
+    case InvalidDimensions(width: UInt32, height: UInt32
+    )
+    case InvalidBufferLength(width: UInt32, height: UInt32, expected: UInt64, actual: UInt64
+    )
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNtscEffectError: FfiConverterRustBuffer {
+    typealias SwiftType = NtscEffectError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NtscEffectError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .InvalidDimensions(
+            width: try FfiConverterUInt32.read(from: &buf), 
+            height: try FfiConverterUInt32.read(from: &buf)
+            )
+        case 2: return .InvalidBufferLength(
+            width: try FfiConverterUInt32.read(from: &buf), 
+            height: try FfiConverterUInt32.read(from: &buf), 
+            expected: try FfiConverterUInt64.read(from: &buf), 
+            actual: try FfiConverterUInt64.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: NtscEffectError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .InvalidDimensions(width,height):
+            writeInt(&buf, Int32(1))
+            FfiConverterUInt32.write(width, into: &buf)
+            FfiConverterUInt32.write(height, into: &buf)
+            
+        
+        case let .InvalidBufferLength(width,height,expected,actual):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt32.write(width, into: &buf)
+            FfiConverterUInt32.write(height, into: &buf)
+            FfiConverterUInt64.write(expected, into: &buf)
+            FfiConverterUInt64.write(actual, into: &buf)
+            
+        }
+    }
+}
+
+
+extension NtscEffectError: Equatable, Hashable {}
+
+extension NtscEffectError: Foundation.LocalizedError {
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+}
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum NtscEffectPreset {
+    
+    case low
+    case medium
+    case hard
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNtscEffectPreset: FfiConverterRustBuffer {
+    typealias SwiftType = NtscEffectPreset
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NtscEffectPreset {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .low
+        
+        case 2: return .medium
+        
+        case 3: return .hard
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: NtscEffectPreset, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .low:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .medium:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .hard:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNtscEffectPreset_lift(_ buf: RustBuffer) throws -> NtscEffectPreset {
+    return try FfiConverterTypeNtscEffectPreset.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNtscEffectPreset_lower(_ value: NtscEffectPreset) -> RustBuffer {
+    return FfiConverterTypeNtscEffectPreset.lower(value)
+}
+
+
+
+extension NtscEffectPreset: Equatable, Hashable {}
+
+
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
@@ -1125,6 +1287,17 @@ fileprivate struct FfiConverterSequenceTypeCaptureEvent: FfiConverterRustBuffer 
         return seq
     }
 }
+public func applyNtscEffectBgrx(width: UInt32, height: UInt32, frameNum: UInt64, preset: NtscEffectPreset, pixels: Data)throws  -> Data {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeNtscEffectError.lift) {
+    uniffi_platform_macos_fn_func_apply_ntsc_effect_bgrx(
+        FfiConverterUInt32.lower(width),
+        FfiConverterUInt32.lower(height),
+        FfiConverterUInt64.lower(frameNum),
+        FfiConverterTypeNtscEffectPreset.lower(preset),
+        FfiConverterData.lower(pixels),$0
+    )
+})
+}
 /**
  * Return the focused window bounds of `pid` in CG screen space (top-left
  * origin, y increasing downward).
@@ -1154,6 +1327,9 @@ private var initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_platform_macos_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_platform_macos_checksum_func_apply_ntsc_effect_bgrx() != 14376) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_platform_macos_checksum_func_get_focused_window_bounds() != 56663) {
         return InitializationResult.apiChecksumMismatch

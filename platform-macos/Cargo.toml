@@ -26,6 +26,8 @@ async-trait = "0.1"
 uuid = { version = "1", features = ["v4"] }
 # Insertion-ordered map for the keyed per-session cursor render collection.
 indexmap = "2"
+# Core NTSC/VHS video artifact effect used by the app's live output pipeline.
+ntsc-rs = { git = "https://github.com/ntsc-rs/ntsc-rs", tag = "v0.9.4", package = "ntsc-rs" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # macOS system bindings

@@ -303,6 +303,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
 
                 outputFlipButtons
+                ntscPresetPicker
             }
 
             Divider()
@@ -451,6 +452,24 @@ struct ContentView: View {
         .help(isActive ? "\(title) flip enabled" : "Flip output \(title.lowercased())")
     }
 
+    private var ntscPresetPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("NTSC Preset", systemImage: "tv")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Picker("NTSC Preset", selection: ntscPresetSelection) {
+                ForEach(NtscPreset.allCases) { preset in
+                    Text(preset.title)
+                        .tag(preset)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+        }
+    }
+
     private var cameraSelection: Binding<String> {
         Binding {
             pipeline.selectedCameraID
@@ -464,6 +483,14 @@ struct ContentView: View {
             pipeline.backgroundMode
         } set: { newValue in
             pipeline.backgroundMode = newValue
+        }
+    }
+
+    private var ntscPresetSelection: Binding<NtscPreset> {
+        Binding {
+            pipeline.ntscPreset
+        } set: { newValue in
+            pipeline.ntscPreset = newValue
         }
     }
 
@@ -574,6 +601,8 @@ struct ContentView: View {
             pipeline.triggerConfetti()
         case .cycleWindowBackground:
             cycleWindowBackground()
+        case .toggleNtscEffect:
+            pipeline.toggleNtscEffect()
         }
     }
 

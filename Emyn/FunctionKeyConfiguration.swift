@@ -74,6 +74,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
     case drawAttentionToCursor
     case triggerConfetti
     case cycleWindowBackground
+    case toggleNtscEffect
 
     var id: String { rawValue }
 
@@ -88,6 +89,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         case .drawAttentionToCursor: return "Cursor"
         case .triggerConfetti: return "Confetti"
         case .cycleWindowBackground: return "Next Window"
+        case .toggleNtscEffect: return "NTSC"
         }
     }
 
@@ -102,6 +104,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         case .drawAttentionToCursor: return "cursorarrow.rays"
         case .triggerConfetti: return "sparkles"
         case .cycleWindowBackground: return "rectangle.stack"
+        case .toggleNtscEffect: return "tv"
         }
     }
 
@@ -113,7 +116,8 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
             .cycleWindowBackground,
             .toggleWindowAndPerson,
             .drawAttentionToCursor,
-            .triggerConfetti
+            .triggerConfetti,
+            .toggleNtscEffect
         ]
     }
 
@@ -121,7 +125,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .toggleWindowBackground, .toggleWindowZoom, .toggleWindowAndPerson, .cycleWindowBackground:
             return true
-        case .none, .togglePersonPosition, .toggleImageOverlay, .drawAttentionToCursor, .triggerConfetti:
+        case .none, .togglePersonPosition, .toggleImageOverlay, .drawAttentionToCursor, .triggerConfetti, .toggleNtscEffect:
             return false
         }
     }

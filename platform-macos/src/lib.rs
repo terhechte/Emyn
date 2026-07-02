@@ -32,5 +32,6 @@ pub mod terminal;
 pub mod event_tap;
 #[cfg(target_os = "macos")]
 pub mod capture_session;
+pub mod ntsc_effect;
 
 uniffi::setup_scaffolding!();
