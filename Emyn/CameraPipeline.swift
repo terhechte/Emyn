@@ -1950,7 +1950,14 @@ final class CameraPipeline: NSObject, ObservableObject {
         let textWidth = max(1, captionWidth - padding * 2)
 
         let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.alignment = configuration.alignment == .bottomLeft ? .left : .center
+        switch configuration.alignment {
+        case .topLeft, .middleLeft, .bottomLeft:
+            paragraphStyle.alignment = .left
+        case .topCenter, .middleCenter, .bottomCenter:
+            paragraphStyle.alignment = .center
+        case .topRight, .middleRight, .bottomRight:
+            paragraphStyle.alignment = .right
+        }
         paragraphStyle.lineBreakMode = .byWordWrapping
 
         let fontSize = max(10, min(96, CGFloat(configuration.fontSize)))
@@ -1967,19 +1974,32 @@ final class CameraPipeline: NSObject, ObservableObject {
 
         let backgroundWidth = min(captionWidth, ceil(measuredTextRect.width + padding * 2))
         let backgroundHeight = ceil(measuredTextRect.height + padding * 2)
+        let effectiveBackgroundHeight = min(backgroundHeight, max(1, outputHeight - outerInset * 2))
         let originX: CGFloat
         switch configuration.alignment {
-        case .bottomCenter:
-            originX = floor((outputWidth - backgroundWidth) * 0.5)
-        case .bottomLeft:
+        case .topLeft, .middleLeft, .bottomLeft:
             originX = outerInset
+        case .topCenter, .middleCenter, .bottomCenter:
+            originX = floor((outputWidth - backgroundWidth) * 0.5)
+        case .topRight, .middleRight, .bottomRight:
+            originX = outputWidth - backgroundWidth - outerInset
+        }
+
+        let originY: CGFloat
+        switch configuration.alignment {
+        case .topLeft, .topCenter, .topRight:
+            originY = outputHeight - effectiveBackgroundHeight - outerInset
+        case .middleLeft, .middleCenter, .middleRight:
+            originY = floor((outputHeight - effectiveBackgroundHeight) * 0.5)
+        case .bottomLeft, .bottomCenter, .bottomRight:
+            originY = outerInset
         }
 
         let backgroundRect = NSRect(
             x: max(outerInset, min(outputWidth - backgroundWidth - outerInset, originX)),
-            y: outerInset,
+            y: max(outerInset, min(outputHeight - effectiveBackgroundHeight - outerInset, originY)),
             width: backgroundWidth,
-            height: min(backgroundHeight, max(1, outputHeight - outerInset * 2))
+            height: effectiveBackgroundHeight
         )
         let textRect = backgroundRect.insetBy(dx: padding, dy: padding)
 

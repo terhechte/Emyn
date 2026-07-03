@@ -146,29 +146,59 @@ enum SpeechToTextCaptionWidth: Double, CaseIterable, Identifiable {
 }
 
 enum SpeechToTextCaptionAlignment: String, CaseIterable, Identifiable {
-    case bottomCenter
+    case topLeft
+    case topCenter
+    case topRight
+    case middleLeft
+    case middleCenter
+    case middleRight
     case bottomLeft
+    case bottomCenter
+    case bottomRight
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .bottomCenter: return "Bottom Center"
+        case .topLeft: return "Top Left"
+        case .topCenter: return "Top Center"
+        case .topRight: return "Top Right"
+        case .middleLeft: return "Middle Left"
+        case .middleCenter: return "Middle Center"
+        case .middleRight: return "Middle Right"
         case .bottomLeft: return "Bottom Left"
+        case .bottomCenter: return "Bottom Center"
+        case .bottomRight: return "Bottom Right"
         }
     }
 
     var swiftUIAlignment: Alignment {
         switch self {
-        case .bottomCenter: return .bottom
+        case .topLeft: return .topLeading
+        case .topCenter: return .top
+        case .topRight: return .topTrailing
+        case .middleLeft: return .leading
+        case .middleCenter: return .center
+        case .middleRight: return .trailing
         case .bottomLeft: return .bottomLeading
+        case .bottomCenter: return .bottom
+        case .bottomRight: return .bottomTrailing
         }
     }
 
     var textAlignment: TextAlignment {
         switch self {
-        case .bottomCenter: return .center
-        case .bottomLeft: return .leading
+        case .topLeft, .middleLeft, .bottomLeft: return .leading
+        case .topCenter, .middleCenter, .bottomCenter: return .center
+        case .topRight, .middleRight, .bottomRight: return .trailing
+        }
+    }
+
+    var frameAlignment: Alignment {
+        switch self {
+        case .topLeft, .middleLeft, .bottomLeft: return .leading
+        case .topCenter, .middleCenter, .bottomCenter: return .center
+        case .topRight, .middleRight, .bottomRight: return .trailing
         }
     }
 }

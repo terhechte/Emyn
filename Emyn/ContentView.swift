@@ -25,7 +25,7 @@ private enum ControlTab: String, CaseIterable, Identifiable {
         case .background: return "Background"
         case .appWindow: return "App Window"
         case .functionKeys: return "Function Keys"
-        case .speechToText: return "Speech"
+        case .speechToText: return "Text"
         case .present: return "Present"
         }
     }
@@ -36,7 +36,7 @@ private enum ControlTab: String, CaseIterable, Identifiable {
         case .background: return "photo.fill"
         case .appWindow: return "rectangle.on.rectangle"
         case .functionKeys: return "keyboard"
-        case .speechToText: return "waveform.and.mic"
+        case .speechToText: return "text.bubble"
         case .present: return "rectangle.inset.filled.and.person.filled"
         }
     }
@@ -710,27 +710,21 @@ struct ContentView: View {
                         Slider(value: $speechToText.captionPadding, in: 4...48, step: 1)
                     }
 
-                    Picker("Alignment", selection: $speechToText.captionAlignment) {
-                        ForEach(SpeechToTextCaptionAlignment.allCases) { alignment in
-                            Text(alignment.title).tag(alignment)
+                    HStack(spacing: 8) {
+                        fieldLabel("Position")
+
+                        Picker("Position", selection: $speechToText.captionAlignment) {
+                            ForEach(SpeechToTextCaptionAlignment.allCases) { alignment in
+                                Text(alignment.title).tag(alignment)
+                            }
                         }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .controlSize(.small)
                     }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .controlSize(.small)
                 }
             }
             .frame(minWidth: 260)
-
-            panelDivider
-
-            controlSection("Preview", systemImage: "rectangle.on.rectangle") {
-                SpeechToTextCaptionPreview(
-                    configuration: speechToText,
-                    text: speechCaptionPreviewText
-                )
-            }
-            .frame(minWidth: 280)
         }
     }
 
@@ -1318,10 +1312,6 @@ struct ContentView: View {
         }
     }
 
-    private var speechCaptionPreviewText: String {
-        isSpeechTestSentenceVisible ? Self.speechTestSentence : "Live captions appear here"
-    }
-
     private func refreshSpeechCaptionOverlay() {
         let liveText = speechToText.isSpeechToTextEnabled
             ? speechTranscriber.transcribedText
@@ -1618,7 +1608,7 @@ private struct SpeechToTextCaptionOverlay: View {
                     .padding(CGFloat(configuration.captionPadding))
                     .frame(
                         width: max(120, proxy.size.width * CGFloat(configuration.captionWidth.rawValue)),
-                        alignment: configuration.captionAlignment == .bottomLeft ? .leading : .center
+                        alignment: configuration.captionAlignment.frameAlignment
                     )
                     .background(
                         configuration.captionBackgroundColor.swiftUIColor,
@@ -1626,25 +1616,6 @@ private struct SpeechToTextCaptionOverlay: View {
                     )
                     .padding(10)
             }
-        }
-    }
-}
-
-private struct SpeechToTextCaptionPreview: View {
-    @ObservedObject var configuration: SpeechToTextConfiguration
-    let text: String
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.black.opacity(0.72))
-
-            SpeechToTextCaptionOverlay(configuration: configuration, text: text)
-        }
-        .frame(height: 130)
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(.white.opacity(0.12), lineWidth: 1)
         }
     }
 }
