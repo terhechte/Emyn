@@ -137,6 +137,7 @@ struct ContentView: View {
         .onAppear {
             pipeline.refreshCameras()
             pipeline.start()
+            refreshSpeechCaptionOverlay()
             functionKeys.onTrigger = handleFunctionKeyTrigger(_:)
             functionKeys.startMonitoring()
         }
@@ -144,6 +145,7 @@ struct ContentView: View {
             cursorAttentionTask?.cancel()
             functionKeys.stopMonitoring()
             speechMicrophoneMonitor.stopMonitoring()
+            pipeline.setSpeechCaptionOverlay(text: nil, configuration: speechToText.captionRenderConfiguration)
             windowControl.deactivate()
             pipeline.stop()
             pipeline.clearWindowBackground()
@@ -156,6 +158,12 @@ struct ContentView: View {
         }
         .onChange(of: speechToText.selectedMicrophoneID) { _, _ in
             updateSpeechMicrophoneMonitoring()
+        }
+        .onChange(of: isSpeechTestSentenceVisible) { _, _ in
+            refreshSpeechCaptionOverlay()
+        }
+        .onChange(of: speechToText.captionRenderConfiguration) { _, _ in
+            refreshSpeechCaptionOverlay()
         }
         .onChange(of: excludeFunctionKeysDuringWindowControl) { _, newValue in
             windowControl.setExcludeFunctionKeys(newValue)
@@ -251,14 +259,6 @@ struct ContentView: View {
                     }
                 )
                 .background(.black)
-
-                if isSpeechTestSentenceVisible {
-                    SpeechToTextCaptionOverlay(
-                        configuration: speechToText,
-                        text: Self.speechTestSentence
-                    )
-                    .allowsHitTesting(false)
-                }
 
                 if windowControl.isActive, let cursor = windowControl.cursorNormalised {
                     GeometryReader { proxy in
@@ -687,6 +687,11 @@ struct ContentView: View {
 
                     ColorPicker("Background", selection: speechCaptionBackgroundColorSelection, supportsOpacity: true)
                         .controlSize(.small)
+
+                    Toggle("Apply NTSC to captions", isOn: $speechToText.areCaptionsAffectedByNTSC)
+                        .toggleStyle(.checkbox)
+                        .controlSize(.small)
+                        .help("When enabled, captions are rendered before the NTSC effect. When disabled, captions stay crisp.")
                 }
             }
             .frame(minWidth: 240)
@@ -1481,6 +1486,13 @@ struct ContentView: View {
 
     private var speechCaptionPreviewText: String {
         isSpeechTestSentenceVisible ? Self.speechTestSentence : "Live captions appear here"
+    }
+
+    private func refreshSpeechCaptionOverlay() {
+        pipeline.setSpeechCaptionOverlay(
+            text: isSpeechTestSentenceVisible ? Self.speechTestSentence : nil,
+            configuration: speechToText.captionRenderConfiguration
+        )
     }
 
     private var shouldShowMissingSelectedMicrophone: Bool {

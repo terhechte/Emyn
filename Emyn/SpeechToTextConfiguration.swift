@@ -215,6 +215,28 @@ struct SpeechToTextColor: Codable, Equatable {
     static let translucentBlack = SpeechToTextColor(red: 0, green: 0, blue: 0, alpha: 0.72)
 }
 
+struct SpeechToTextCaptionRenderConfiguration: Equatable {
+    var font: SpeechToTextCaptionFont
+    var fontSize: Double
+    var fontColor: SpeechToTextColor
+    var backgroundColor: SpeechToTextColor
+    var width: SpeechToTextCaptionWidth
+    var padding: Double
+    var alignment: SpeechToTextCaptionAlignment
+    var isAffectedByNTSC: Bool
+
+    static let defaultValue = SpeechToTextCaptionRenderConfiguration(
+        font: .system,
+        fontSize: 30,
+        fontColor: .white,
+        backgroundColor: .translucentBlack,
+        width: .eighty,
+        padding: 14,
+        alignment: .bottomCenter,
+        isAffectedByNTSC: false
+    )
+}
+
 @MainActor
 final class SpeechToTextConfiguration: ObservableObject {
     @Published var isSpeechToTextEnabled: Bool {
@@ -257,6 +279,10 @@ final class SpeechToTextConfiguration: ObservableObject {
         didSet { defaults.set(captionAlignment.rawValue, forKey: Key.captionAlignment) }
     }
 
+    @Published var areCaptionsAffectedByNTSC: Bool {
+        didSet { defaults.set(areCaptionsAffectedByNTSC, forKey: Key.captionsAffectedByNTSC) }
+    }
+
     private let defaults: UserDefaults
 
     var selectedModel: SpeechToTextModelDescriptor {
@@ -265,6 +291,19 @@ final class SpeechToTextConfiguration: ObservableObject {
 
     var selectedModelLocalURL: URL {
         Self.localModelURL(for: selectedModel)
+    }
+
+    var captionRenderConfiguration: SpeechToTextCaptionRenderConfiguration {
+        SpeechToTextCaptionRenderConfiguration(
+            font: captionFont,
+            fontSize: captionFontSize,
+            fontColor: captionFontColor,
+            backgroundColor: captionBackgroundColor,
+            width: captionWidth,
+            padding: captionPadding,
+            alignment: captionAlignment,
+            isAffectedByNTSC: areCaptionsAffectedByNTSC
+        )
     }
 
     var backendStatusText: String {
@@ -303,6 +342,7 @@ final class SpeechToTextConfiguration: ObservableObject {
         captionPadding = Self.clampedPadding(defaults.object(forKey: Key.captionPadding) as? Double ?? 14)
         captionAlignment = defaults.string(forKey: Key.captionAlignment)
             .flatMap(SpeechToTextCaptionAlignment.init(rawValue:)) ?? .bottomCenter
+        areCaptionsAffectedByNTSC = defaults.object(forKey: Key.captionsAffectedByNTSC) as? Bool ?? false
     }
 
     func localModelPathForBackend() -> String? {
@@ -365,6 +405,7 @@ final class SpeechToTextConfiguration: ObservableObject {
         static let captionWidth = "speechToText.captionWidth.v1"
         static let captionPadding = "speechToText.captionPadding.v1"
         static let captionAlignment = "speechToText.captionAlignment.v1"
+        static let captionsAffectedByNTSC = "speechToText.captionsAffectedByNTSC.v1"
     }
 }
 

@@ -403,6 +403,8 @@ private struct ProcessingSettings {
     var ntscEffectEnabled = false
     var ntscPreset: NtscPreset = .medium
     var presentationEffects = PresentationEffects()
+    var speechCaptionText: String?
+    var speechCaptionConfiguration = SpeechToTextCaptionRenderConfiguration.defaultValue
 }
 
 private struct AnimatedScalar {
@@ -735,6 +737,13 @@ final class CameraPipeline: NSObject, ObservableObject {
         selectedBackgroundMediaKind != nil
     }
 
+    func setSpeechCaptionOverlay(text: String?, configuration: SpeechToTextCaptionRenderConfiguration) {
+        updateSettings { settings in
+            settings.speechCaptionText = text
+            settings.speechCaptionConfiguration = configuration
+        }
+    }
+
     var activeWindowBackgroundOption: WindowBackgroundOption? {
         guard let activeWindowBackgroundIndex,
               selectedWindowBackgroundOptions.indices.contains(activeWindowBackgroundIndex) else {
@@ -765,6 +774,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     private static let screenCaptureBackgroundColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0)
     private static let windowBackgroundCycleFadeDuration: CFTimeInterval = 0.5
     private static let confettiParticleCount = 144
+    private static let confettiReferenceOutputSize = CGSize(width: 1280, height: 720)
     private static let confettiParticleScale: CGFloat = 1.3
     private static let confettiPalette: [(red: CGFloat, green: CGFloat, blue: CGFloat)] = [
         (0.98, 0.20, 0.30),
@@ -790,6 +800,8 @@ final class CameraPipeline: NSObject, ObservableObject {
     private var ntscPixelBufferPoolSize = CGSize(width: 0, height: 0)
     private var confettiOverlayPixelBufferPool: CVPixelBufferPool?
     private var confettiOverlayPixelBufferPoolSize = CGSize(width: 0, height: 0)
+    private var speechCaptionOverlayPixelBufferPool: CVPixelBufferPool?
+    private var speechCaptionOverlayPixelBufferPoolSize = CGSize(width: 0, height: 0)
     private var outputFormatDescription: CMFormatDescription?
     private var outputFormatDescriptionSize = CGSize(width: 0, height: 0)
     private var frameCounter: UInt64 = 0
@@ -1466,6 +1478,15 @@ final class CameraPipeline: NSObject, ObservableObject {
             vertical: settings.outputFlipVertical
         )
 
+        let hasSpeechCaption = hasSpeechCaption(settings)
+        if hasSpeechCaption, settings.speechCaptionConfiguration.isAffectedByNTSC {
+            renderedImage = applySpeechCaptionOverlay(
+                over: renderedImage,
+                outputExtent: outputExtent,
+                settings: settings
+            )
+        }
+
         ciContext.render(
             renderedImage,
             to: outputPixelBuffer,
@@ -1475,6 +1496,10 @@ final class CameraPipeline: NSObject, ObservableObject {
 
         if settings.ntscEffectEnabled {
             applyNtscEffect(to: outputPixelBuffer, preset: settings.ntscPreset)
+        }
+
+        if hasSpeechCaption, !settings.speechCaptionConfiguration.isAffectedByNTSC {
+            drawSpeechCaption(to: outputPixelBuffer, outputExtent: outputExtent, settings: settings)
         }
 
         frameWriter?.publish(pixelBuffer: outputPixelBuffer, presentationTime: timestamp)
@@ -1849,6 +1874,170 @@ final class CameraPipeline: NSObject, ObservableObject {
             .cropped(to: outputExtent)
     }
 
+    private func applySpeechCaptionOverlay(
+        over image: CIImage,
+        outputExtent: CGRect,
+        settings: ProcessingSettings
+    ) -> CIImage {
+        guard let overlay = renderSpeechCaptionOverlay(settings: settings, outputExtent: outputExtent) else {
+            return image.cropped(to: outputExtent)
+        }
+
+        return overlay
+            .composited(over: image.cropped(to: outputExtent))
+            .cropped(to: outputExtent)
+    }
+
+    private func renderSpeechCaptionOverlay(
+        settings: ProcessingSettings,
+        outputExtent: CGRect
+    ) -> CIImage? {
+        guard hasSpeechCaption(settings),
+              let pixelBuffer = makeSpeechCaptionOverlayPixelBuffer(size: outputExtent.size),
+              CVPixelBufferLockBaseAddress(pixelBuffer, []) == kCVReturnSuccess else {
+            return nil
+        }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            return nil
+        }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue
+            | CGImageAlphaInfo.premultipliedFirst.rawValue
+        guard let context = CGContext(
+            data: baseAddress,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: bitmapInfo
+        ) else {
+            return nil
+        }
+
+        context.clear(CGRect(x: 0, y: 0, width: width, height: height))
+
+        drawSpeechCaption(
+            settings.speechCaptionText ?? "",
+            configuration: settings.speechCaptionConfiguration,
+            in: context,
+            outputExtent: outputExtent
+        )
+
+        return CIImage(cvPixelBuffer: pixelBuffer).cropped(to: outputExtent)
+    }
+
+    private func drawSpeechCaption(
+        _ text: String,
+        configuration: SpeechToTextCaptionRenderConfiguration,
+        in context: CGContext,
+        outputExtent: CGRect
+    ) {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return }
+
+        let outputWidth = outputExtent.width
+        let outputHeight = outputExtent.height
+        let outerInset = max(10, min(outputWidth, outputHeight) * 0.018)
+        let padding = max(4, min(64, CGFloat(configuration.padding)))
+        let availableWidth = max(1, outputWidth - outerInset * 2)
+        let captionWidth = min(availableWidth, max(120, outputWidth * CGFloat(configuration.width.rawValue)))
+        let textWidth = max(1, captionWidth - padding * 2)
+
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = configuration.alignment == .bottomLeft ? .left : .center
+        paragraphStyle.lineBreakMode = .byWordWrapping
+
+        let fontSize = max(10, min(96, CGFloat(configuration.fontSize)))
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: configuration.font.nsFont(size: fontSize),
+            .foregroundColor: configuration.fontColor.nsColor,
+            .paragraphStyle: paragraphStyle
+        ]
+        let attributedText = NSAttributedString(string: trimmedText, attributes: attributes)
+        let measuredTextRect = attributedText.boundingRect(
+            with: NSSize(width: textWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+
+        let backgroundWidth = min(captionWidth, ceil(measuredTextRect.width + padding * 2))
+        let backgroundHeight = ceil(measuredTextRect.height + padding * 2)
+        let originX: CGFloat
+        switch configuration.alignment {
+        case .bottomCenter:
+            originX = floor((outputWidth - backgroundWidth) * 0.5)
+        case .bottomLeft:
+            originX = outerInset
+        }
+
+        let backgroundRect = NSRect(
+            x: max(outerInset, min(outputWidth - backgroundWidth - outerInset, originX)),
+            y: outerInset,
+            width: backgroundWidth,
+            height: min(backgroundHeight, max(1, outputHeight - outerInset * 2))
+        )
+        let textRect = backgroundRect.insetBy(dx: padding, dy: padding)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        configuration.backgroundColor.nsColor.setFill()
+        NSBezierPath(roundedRect: backgroundRect, xRadius: 8, yRadius: 8).fill()
+        attributedText.draw(
+            with: textRect,
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func drawSpeechCaption(
+        to pixelBuffer: CVPixelBuffer,
+        outputExtent: CGRect,
+        settings: ProcessingSettings
+    ) {
+        guard CVPixelBufferLockBaseAddress(pixelBuffer, []) == kCVReturnSuccess else {
+            return
+        }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            return
+        }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue
+            | CGImageAlphaInfo.premultipliedFirst.rawValue
+        guard let context = CGContext(
+            data: baseAddress,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: bitmapInfo
+        ) else {
+            return
+        }
+
+        drawSpeechCaption(
+            settings.speechCaptionText ?? "",
+            configuration: settings.speechCaptionConfiguration,
+            in: context,
+            outputExtent: outputExtent
+        )
+    }
+
+    private func hasSpeechCaption(_ settings: ProcessingSettings) -> Bool {
+        guard let text = settings.speechCaptionText else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private func renderConfettiOverlay(
         _ bursts: [ConfettiBurst],
         outputExtent: CGRect,
@@ -1907,6 +2096,10 @@ final class CameraPipeline: NSObject, ObservableObject {
     ) {
         let width = outputExtent.width
         let height = outputExtent.height
+        let resolutionScale = max(0.1, min(
+            width / Self.confettiReferenceOutputSize.width,
+            height / Self.confettiReferenceOutputSize.height
+        ))
 
         for index in 0..<Self.confettiParticleCount {
             let delay = Self.confettiRandom(seed: burst.seed, index: index, salt: 0) * 0.22
@@ -1930,23 +2123,25 @@ final class CameraPipeline: NSObject, ObservableObject {
             let phase = Self.confettiRandom(seed: burst.seed, index: index, salt: 4) * .pi * 2
             let sway = CGFloat(sin(Double(localProgress * 10 + phase))) * (
                 12 + Self.confettiRandom(seed: burst.seed, index: index, salt: 5) * 24
-            )
+            ) * resolutionScale
             let speed = 0.78 + Self.confettiRandom(seed: burst.seed, index: index, salt: 6) * 0.58
-            let fall = CGFloat(pow(Double(localProgress), 1.22)) * (height + 190) * speed
+            let fall = CGFloat(pow(Double(localProgress), 1.22)) * (height + 190 * resolutionScale) * speed
             let x = startX + drift + sway
-            let y = outputExtent.maxY + 80 - fall
+            let y = outputExtent.maxY + 80 * resolutionScale - fall
 
-            guard y > outputExtent.minY - 40,
-                  y < outputExtent.maxY + 100,
-                  x > outputExtent.minX - 60,
-                  x < outputExtent.maxX + 60 else {
+            guard y > outputExtent.minY - 40 * resolutionScale,
+                  y < outputExtent.maxY + 100 * resolutionScale,
+                  x > outputExtent.minX - 60 * resolutionScale,
+                  x < outputExtent.maxX + 60 * resolutionScale else {
                 continue
             }
 
             let particleWidth = (7 + Self.confettiRandom(seed: burst.seed, index: index, salt: 7) * 10)
                 * Self.confettiParticleScale
+                * resolutionScale
             let particleHeight = (3 + Self.confettiRandom(seed: burst.seed, index: index, salt: 8) * 8)
                 * Self.confettiParticleScale
+                * resolutionScale
             let spinDirection: CGFloat = Self.confettiRandom(seed: burst.seed, index: index, salt: 9) < 0.5 ? -1 : 1
             let angle = (
                 Self.confettiRandom(seed: burst.seed, index: index, salt: 10) * .pi * 2
@@ -2271,6 +2466,27 @@ final class CameraPipeline: NSObject, ObservableObject {
         return pixelBuffer
     }
 
+    private func makeSpeechCaptionOverlayPixelBuffer(size: CGSize) -> CVPixelBuffer? {
+        let width = Int(size.width.rounded())
+        let height = Int(size.height.rounded())
+        guard width > 0, height > 0 else { return nil }
+
+        let integralSize = CGSize(width: width, height: height)
+        if speechCaptionOverlayPixelBufferPool == nil || speechCaptionOverlayPixelBufferPoolSize != integralSize {
+            speechCaptionOverlayPixelBufferPool = Self.makePixelBufferPool(
+                width: width,
+                height: height,
+                pixelFormat: SharedFrameConfiguration.pixelFormat
+            )
+            speechCaptionOverlayPixelBufferPoolSize = integralSize
+        }
+
+        guard let speechCaptionOverlayPixelBufferPool else { return nil }
+        var pixelBuffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, speechCaptionOverlayPixelBufferPool, &pixelBuffer)
+        return pixelBuffer
+    }
+
     private func materializedMaskImage(from mask: CIImage) -> CIImage? {
         let normalizedMask = normalizeExtent(mask)
         let maskSize = normalizedMask.extent.size
@@ -2351,6 +2567,8 @@ final class CameraPipeline: NSObject, ObservableObject {
         ntscPixelBufferPoolSize = .zero
         confettiOverlayPixelBufferPool = nil
         confettiOverlayPixelBufferPoolSize = .zero
+        speechCaptionOverlayPixelBufferPool = nil
+        speechCaptionOverlayPixelBufferPoolSize = .zero
     }
 
     private func updateOutputFormatDescription(size: CGSize) {
