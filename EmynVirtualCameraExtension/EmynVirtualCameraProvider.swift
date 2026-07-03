@@ -29,6 +29,7 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
     private let bufferAuxAttributes: NSDictionary = [kCVPixelBufferPoolAllocationThresholdKey: 6]
     private var frameReader: SharedFrameReader?
     private var fallbackPhase = 0
+    private var outputFrameSize = SharedFrameConfiguration.outputFrameSize
 
     init(localizedName: String) {
         super.init()
@@ -41,34 +42,14 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
             source: self
         )
 
-        CMVideoFormatDescriptionCreate(
-            allocator: kCFAllocatorDefault,
-            codecType: SharedFrameConfiguration.pixelFormat,
-            width: Int32(SharedFrameConfiguration.width),
-            height: Int32(SharedFrameConfiguration.height),
-            extensions: nil,
-            formatDescriptionOut: &videoDescription
-        )
+        configureVideoOutput(for: outputFrameSize)
 
-        let pixelBufferAttributes: NSDictionary = [
-            kCVPixelBufferWidthKey: SharedFrameConfiguration.width,
-            kCVPixelBufferHeightKey: SharedFrameConfiguration.height,
-            kCVPixelBufferPixelFormatTypeKey: SharedFrameConfiguration.pixelFormat,
-            kCVPixelBufferIOSurfacePropertiesKey: [:] as NSDictionary
-        ]
-        CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, pixelBufferAttributes, &bufferPool)
-
-        let videoStreamFormat = CMIOExtensionStreamFormat(
-            formatDescription: videoDescription,
-            maxFrameDuration: CMTime(value: 1, timescale: extensionFrameRate),
-            minFrameDuration: CMTime(value: 1, timescale: extensionFrameRate),
-            validFrameDurations: nil
-        )
-
+        let streamFormats = OutputFrameSize.allCases.map(Self.makeStreamFormat)
         streamSource = EmynVirtualCameraStreamSource(
             localizedName: "Emyn Virtual Camera Video",
             streamID: VirtualCameraIDs.stream,
-            streamFormat: videoStreamFormat,
+            streamFormats: streamFormats,
+            activeFormatIndex: Self.formatIndex(for: outputFrameSize),
             device: device
         )
 
@@ -125,7 +106,17 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
         timer = nil
     }
 
+    func setOutputFrameSize(_ frameSize: OutputFrameSize) {
+        SharedFrameConfiguration.outputFrameSize = frameSize
+        applyOutputFrameSizeIfNeeded(frameSize, notifyStream: false)
+    }
+
     private func sendFrame() {
+        let changedFormat = applyOutputFrameSizeIfNeeded(
+            SharedFrameConfiguration.outputFrameSize,
+            notifyStream: true
+        )
+
         var pixelBuffer: CVPixelBuffer?
         let allocationStatus = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(
             kCFAllocatorDefault,
@@ -171,7 +162,70 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
         }
 
         let hostTime = UInt64(timing.presentationTimeStamp.seconds * Double(NSEC_PER_SEC))
-        streamSource.stream.send(sampleBuffer, discontinuity: [], hostTimeInNanoseconds: hostTime)
+        streamSource.stream.send(
+            sampleBuffer,
+            discontinuity: changedFormat ? .unknown : [],
+            hostTimeInNanoseconds: hostTime
+        )
+    }
+
+    @discardableResult
+    private func applyOutputFrameSizeIfNeeded(
+        _ frameSize: OutputFrameSize,
+        notifyStream: Bool
+    ) -> Bool {
+        guard outputFrameSize != frameSize || bufferPool == nil || videoDescription == nil else {
+            return false
+        }
+
+        configureVideoOutput(for: frameSize)
+        streamSource?.setActiveFormatIndex(Self.formatIndex(for: frameSize), notify: notifyStream)
+        return true
+    }
+
+    private func configureVideoOutput(for frameSize: OutputFrameSize) {
+        outputFrameSize = frameSize
+        fallbackPhase = 0
+
+        CMVideoFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            codecType: SharedFrameConfiguration.pixelFormat,
+            width: Int32(frameSize.width),
+            height: Int32(frameSize.height),
+            extensions: nil,
+            formatDescriptionOut: &videoDescription
+        )
+
+        let pixelBufferAttributes: NSDictionary = [
+            kCVPixelBufferWidthKey: frameSize.width,
+            kCVPixelBufferHeightKey: frameSize.height,
+            kCVPixelBufferPixelFormatTypeKey: SharedFrameConfiguration.pixelFormat,
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as NSDictionary
+        ]
+        CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, pixelBufferAttributes, &bufferPool)
+    }
+
+    private static func makeStreamFormat(for frameSize: OutputFrameSize) -> CMIOExtensionStreamFormat {
+        var description: CMFormatDescription?
+        CMVideoFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            codecType: SharedFrameConfiguration.pixelFormat,
+            width: Int32(frameSize.width),
+            height: Int32(frameSize.height),
+            extensions: nil,
+            formatDescriptionOut: &description
+        )
+
+        return CMIOExtensionStreamFormat(
+            formatDescription: description!,
+            maxFrameDuration: CMTime(value: 1, timescale: extensionFrameRate),
+            minFrameDuration: CMTime(value: 1, timescale: extensionFrameRate),
+            validFrameDurations: nil
+        )
+    }
+
+    private static func formatIndex(for frameSize: OutputFrameSize) -> Int {
+        OutputFrameSize.allCases.firstIndex(of: frameSize) ?? 0
     }
 
     private func drawFallbackFrame(into pixelBuffer: CVPixelBuffer) {
@@ -206,17 +260,19 @@ final class EmynVirtualCameraStreamSource: NSObject, CMIOExtensionStreamSource {
     private(set) var stream: CMIOExtensionStream!
 
     let device: CMIOExtensionDevice
-    private let streamFormat: CMIOExtensionStreamFormat
+    private let streamFormats: [CMIOExtensionStreamFormat]
     private var activeFormatIndex = 0
 
     init(
         localizedName: String,
         streamID: UUID,
-        streamFormat: CMIOExtensionStreamFormat,
+        streamFormats: [CMIOExtensionStreamFormat],
+        activeFormatIndex: Int,
         device: CMIOExtensionDevice
     ) {
         self.device = device
-        self.streamFormat = streamFormat
+        self.streamFormats = streamFormats
+        self.activeFormatIndex = activeFormatIndex
         super.init()
         stream = CMIOExtensionStream(
             localizedName: localizedName,
@@ -228,7 +284,7 @@ final class EmynVirtualCameraStreamSource: NSObject, CMIOExtensionStreamSource {
     }
 
     var formats: [CMIOExtensionStreamFormat] {
-        [streamFormat]
+        streamFormats
     }
 
     var availableProperties: Set<CMIOExtensionProperty> {
@@ -248,8 +304,28 @@ final class EmynVirtualCameraStreamSource: NSObject, CMIOExtensionStreamSource {
 
     func setStreamProperties(_ streamProperties: CMIOExtensionStreamProperties) throws {
         if let activeFormatIndex = streamProperties.activeFormatIndex {
-            self.activeFormatIndex = activeFormatIndex
+            setActiveFormatIndex(activeFormatIndex, notify: false)
+            if OutputFrameSize.allCases.indices.contains(activeFormatIndex),
+               let deviceSource = device.source as? EmynVirtualCameraDeviceSource {
+                deviceSource.setOutputFrameSize(OutputFrameSize.allCases[activeFormatIndex])
+            }
         }
+    }
+
+    func setActiveFormatIndex(_ activeFormatIndex: Int, notify: Bool) {
+        guard streamFormats.indices.contains(activeFormatIndex),
+              self.activeFormatIndex != activeFormatIndex else {
+            return
+        }
+
+        self.activeFormatIndex = activeFormatIndex
+        guard notify else { return }
+
+        stream.notifyPropertiesChanged([
+            .streamActiveFormatIndex: CMIOExtensionPropertyState<AnyObject>(
+                value: NSNumber(value: activeFormatIndex)
+            )
+        ])
     }
 
     func authorizedToStartStream(for client: CMIOExtensionClient) -> Bool {

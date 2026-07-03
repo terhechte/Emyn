@@ -3,23 +3,124 @@ import CoreVideo
 import Darwin
 import Foundation
 
+enum OutputFrameSize: String, CaseIterable, Identifiable {
+    case p540 = "960x540"
+    case p720 = "1280x720"
+    case p1080 = "1920x1080"
+
+    var id: String { rawValue }
+
+    var width: Int {
+        switch self {
+        case .p540:
+            return 960
+        case .p720:
+            return 1280
+        case .p1080:
+            return 1920
+        }
+    }
+
+    var height: Int {
+        switch self {
+        case .p540:
+            return 540
+        case .p720:
+            return 720
+        case .p1080:
+            return 1080
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .p540:
+            return "540p"
+        case .p720:
+            return "720p"
+        case .p1080:
+            return "1080p"
+        }
+    }
+
+    var dimensionsTitle: String {
+        "\(width)x\(height)"
+    }
+
+    var bytesPerRow: Int {
+        width * SharedFrameConfiguration.bytesPerPixel
+    }
+
+    var frameByteCount: Int {
+        bytesPerRow * height
+    }
+
+    init?(width: Int, height: Int) {
+        guard let size = Self.allCases.first(where: { $0.width == width && $0.height == height }) else {
+            return nil
+        }
+
+        self = size
+    }
+}
+
 enum SharedFrameConfiguration {
     static let appGroupIdentifier = "group.com.stylemac.Emyn"
     static let sharedFileName = "VirtualCameraFrame.dat"
     static let virtualCameraName = "Emyn Virtual Camera"
     static let systemExtensionBundleIdentifier = "com.stylemac.Emyn.VirtualCameraExtension"
+    static let outputFrameSizeDefaultsKey = "OutputFrameSize"
+    static let defaultOutputFrameSize: OutputFrameSize = .p720
 
-    static let width = 1280
-    static let height = 720
     static let bytesPerPixel = 4
-    static let bytesPerRow = width * bytesPerPixel
-    static let frameByteCount = bytesPerRow * height
     static let headerByteCount = 64
-    static let fileByteCount = headerByteCount + frameByteCount
     static let pixelFormat = kCVPixelFormatType_32BGRA
 
     static let magic: UInt32 = 0x454D_594E
     static let version: UInt32 = 1
+
+    static var outputFrameSize: OutputFrameSize {
+        get {
+            guard let rawValue = sharedDefaults.string(forKey: outputFrameSizeDefaultsKey),
+                  let size = OutputFrameSize(rawValue: rawValue) else {
+                return defaultOutputFrameSize
+            }
+
+            return size
+        }
+        set {
+            sharedDefaults.set(newValue.rawValue, forKey: outputFrameSizeDefaultsKey)
+            _ = sharedDefaults.synchronize()
+        }
+    }
+
+    static var width: Int {
+        outputFrameSize.width
+    }
+
+    static var height: Int {
+        outputFrameSize.height
+    }
+
+    static var bytesPerRow: Int {
+        outputFrameSize.bytesPerRow
+    }
+
+    static var frameByteCount: Int {
+        outputFrameSize.frameByteCount
+    }
+
+    static var maximumFrameByteCount: Int {
+        OutputFrameSize.allCases.map(\.frameByteCount).max() ?? defaultOutputFrameSize.frameByteCount
+    }
+
+    static var fileByteCount: Int {
+        headerByteCount + maximumFrameByteCount
+    }
+
+    private static var sharedDefaults: UserDefaults {
+        UserDefaults(suiteName: appGroupIdentifier) ?? .standard
+    }
 }
 
 enum SharedFrameStoreError: LocalizedError {
@@ -68,8 +169,9 @@ final class SharedFrameMappedFile {
             throw SharedFrameStoreError.couldNotOpenFile(Self.lastErrnoDescription())
         }
 
-        if createIfNeeded {
-            guard ftruncate(descriptor, off_t(SharedFrameConfiguration.fileByteCount)) == 0 else {
+        let requiredByteCount = SharedFrameConfiguration.fileByteCount
+        if createIfNeeded || Self.fileSize(of: descriptor) < requiredByteCount {
+            guard ftruncate(descriptor, off_t(requiredByteCount)) == 0 else {
                 let reason = Self.lastErrnoDescription()
                 Darwin.close(descriptor)
                 throw SharedFrameStoreError.couldNotResizeFile(reason)
@@ -78,7 +180,7 @@ final class SharedFrameMappedFile {
 
         let mapped = mmap(
             nil,
-            SharedFrameConfiguration.fileByteCount,
+            requiredByteCount,
             PROT_READ | PROT_WRITE,
             MAP_SHARED,
             descriptor,
@@ -93,7 +195,7 @@ final class SharedFrameMappedFile {
 
         self.fileDescriptor = descriptor
         self.pointer = mapped
-        self.byteCount = SharedFrameConfiguration.fileByteCount
+        self.byteCount = requiredByteCount
     }
 
     deinit {
@@ -116,6 +218,15 @@ final class SharedFrameMappedFile {
 
     private static func lastErrnoDescription() -> String {
         String(cString: strerror(errno))
+    }
+
+    private static func fileSize(of descriptor: Int32) -> Int {
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else {
+            return 0
+        }
+
+        return max(0, Int(info.st_size))
     }
 }
 
@@ -140,8 +251,13 @@ final class SharedFrameWriter {
     }
 
     func publish(pixelBuffer: CVPixelBuffer, presentationTime: CMTime) {
-        guard CVPixelBufferGetWidth(pixelBuffer) == SharedFrameConfiguration.width,
-              CVPixelBufferGetHeight(pixelBuffer) == SharedFrameConfiguration.height,
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = width * SharedFrameConfiguration.bytesPerPixel
+        let frameByteCount = bytesPerRow * height
+
+        guard OutputFrameSize(width: width, height: height) != nil,
+              frameByteCount <= SharedFrameConfiguration.maximumFrameByteCount,
               CVPixelBufferGetPixelFormatType(pixelBuffer) == SharedFrameConfiguration.pixelFormat else {
             return
         }
@@ -159,20 +275,20 @@ final class SharedFrameWriter {
 
         writeUInt32(SharedFrameConfiguration.magic, at: Offset.magic)
         writeUInt32(SharedFrameConfiguration.version, at: Offset.version)
-        writeUInt32(UInt32(SharedFrameConfiguration.width), at: Offset.width)
-        writeUInt32(UInt32(SharedFrameConfiguration.height), at: Offset.height)
-        writeUInt32(UInt32(SharedFrameConfiguration.bytesPerRow), at: Offset.bytesPerRow)
+        writeUInt32(UInt32(width), at: Offset.width)
+        writeUInt32(UInt32(height), at: Offset.height)
+        writeUInt32(UInt32(bytesPerRow), at: Offset.bytesPerRow)
         writeUInt32(SharedFrameConfiguration.pixelFormat, at: Offset.pixelFormat)
-        writeUInt64(UInt64(SharedFrameConfiguration.frameByteCount), at: Offset.payloadByteCount)
+        writeUInt64(UInt64(frameByteCount), at: Offset.payloadByteCount)
         writeUInt64(Self.nanoseconds(from: presentationTime), at: Offset.timestampNanoseconds)
 
         let destinationBaseAddress = mappedFile.pointer.advanced(by: SharedFrameConfiguration.headerByteCount)
         let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        let copyBytesPerRow = min(sourceBytesPerRow, SharedFrameConfiguration.bytesPerRow)
+        let copyBytesPerRow = min(sourceBytesPerRow, bytesPerRow)
 
-        for row in 0..<SharedFrameConfiguration.height {
+        for row in 0..<height {
             memcpy(
-                destinationBaseAddress.advanced(by: row * SharedFrameConfiguration.bytesPerRow),
+                destinationBaseAddress.advanced(by: row * bytesPerRow),
                 sourceBaseAddress.advanced(by: row * sourceBytesPerRow),
                 copyBytesPerRow
             )
@@ -182,13 +298,14 @@ final class SharedFrameWriter {
     }
 
     private func initializeHeader() {
+        let frameSize = SharedFrameConfiguration.outputFrameSize
         writeUInt32(SharedFrameConfiguration.magic, at: Offset.magic)
         writeUInt32(SharedFrameConfiguration.version, at: Offset.version)
-        writeUInt32(UInt32(SharedFrameConfiguration.width), at: Offset.width)
-        writeUInt32(UInt32(SharedFrameConfiguration.height), at: Offset.height)
-        writeUInt32(UInt32(SharedFrameConfiguration.bytesPerRow), at: Offset.bytesPerRow)
+        writeUInt32(UInt32(frameSize.width), at: Offset.width)
+        writeUInt32(UInt32(frameSize.height), at: Offset.height)
+        writeUInt32(UInt32(frameSize.bytesPerRow), at: Offset.bytesPerRow)
         writeUInt32(SharedFrameConfiguration.pixelFormat, at: Offset.pixelFormat)
-        writeUInt64(UInt64(SharedFrameConfiguration.frameByteCount), at: Offset.payloadByteCount)
+        writeUInt64(UInt64(frameSize.frameByteCount), at: Offset.payloadByteCount)
     }
 
     private func readUInt64(at offset: Int) -> UInt64 {
@@ -227,20 +344,29 @@ final class SharedFrameReader {
 
     private let mappedFile: SharedFrameMappedFile
 
+    private struct Metadata {
+        var width: Int
+        var height: Int
+        var bytesPerRow: Int
+        var pixelFormat: OSType
+        var payloadByteCount: UInt64
+    }
+
     init() throws {
         mappedFile = try SharedFrameMappedFile(createIfNeeded: false)
     }
 
     func copyLatestFrame(to pixelBuffer: CVPixelBuffer) -> SharedFrameSnapshot? {
-        guard CVPixelBufferGetWidth(pixelBuffer) == SharedFrameConfiguration.width,
-              CVPixelBufferGetHeight(pixelBuffer) == SharedFrameConfiguration.height,
-              CVPixelBufferGetPixelFormatType(pixelBuffer) == SharedFrameConfiguration.pixelFormat else {
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == SharedFrameConfiguration.pixelFormat else {
             return nil
         }
 
         for _ in 0..<3 {
             let sequenceBeforeCopy = readUInt64(at: Offset.sequence)
-            guard sequenceBeforeCopy > 0, sequenceBeforeCopy.isMultiple(of: 2), metadataIsValid else {
+            let metadata = readMetadata()
+            guard sequenceBeforeCopy > 0,
+                  sequenceBeforeCopy.isMultiple(of: 2),
+                  metadataIsValid(metadata, for: pixelBuffer) else {
                 return nil
             }
 
@@ -252,12 +378,12 @@ final class SharedFrameReader {
 
             let sourceBaseAddress = mappedFile.pointer.advanced(by: SharedFrameConfiguration.headerByteCount)
             let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-            let copyBytesPerRow = min(destinationBytesPerRow, SharedFrameConfiguration.bytesPerRow)
+            let copyBytesPerRow = min(destinationBytesPerRow, metadata.bytesPerRow)
 
-            for row in 0..<SharedFrameConfiguration.height {
+            for row in 0..<metadata.height {
                 memcpy(
                     destinationBaseAddress.advanced(by: row * destinationBytesPerRow),
-                    sourceBaseAddress.advanced(by: row * SharedFrameConfiguration.bytesPerRow),
+                    sourceBaseAddress.advanced(by: row * metadata.bytesPerRow),
                     copyBytesPerRow
                 )
             }
@@ -276,14 +402,29 @@ final class SharedFrameReader {
         return nil
     }
 
-    private var metadataIsValid: Bool {
-        readUInt32(at: Offset.magic) == SharedFrameConfiguration.magic
-            && readUInt32(at: Offset.version) == SharedFrameConfiguration.version
-            && readUInt32(at: Offset.width) == UInt32(SharedFrameConfiguration.width)
-            && readUInt32(at: Offset.height) == UInt32(SharedFrameConfiguration.height)
-            && readUInt32(at: Offset.bytesPerRow) == UInt32(SharedFrameConfiguration.bytesPerRow)
-            && readUInt32(at: Offset.pixelFormat) == SharedFrameConfiguration.pixelFormat
-            && readUInt64(at: Offset.payloadByteCount) == UInt64(SharedFrameConfiguration.frameByteCount)
+    private func readMetadata() -> Metadata {
+        Metadata(
+            width: Int(readUInt32(at: Offset.width)),
+            height: Int(readUInt32(at: Offset.height)),
+            bytesPerRow: Int(readUInt32(at: Offset.bytesPerRow)),
+            pixelFormat: readUInt32(at: Offset.pixelFormat),
+            payloadByteCount: readUInt64(at: Offset.payloadByteCount)
+        )
+    }
+
+    private func metadataIsValid(_ metadata: Metadata, for pixelBuffer: CVPixelBuffer) -> Bool {
+        guard readUInt32(at: Offset.magic) == SharedFrameConfiguration.magic,
+              readUInt32(at: Offset.version) == SharedFrameConfiguration.version,
+              OutputFrameSize(width: metadata.width, height: metadata.height) != nil,
+              metadata.bytesPerRow == metadata.width * SharedFrameConfiguration.bytesPerPixel,
+              metadata.pixelFormat == SharedFrameConfiguration.pixelFormat,
+              metadata.payloadByteCount == UInt64(metadata.bytesPerRow * metadata.height),
+              metadata.payloadByteCount <= UInt64(SharedFrameConfiguration.maximumFrameByteCount) else {
+            return false
+        }
+
+        return CVPixelBufferGetWidth(pixelBuffer) == metadata.width
+            && CVPixelBufferGetHeight(pixelBuffer) == metadata.height
     }
 
     private func readUInt32(at offset: Int) -> UInt32 {

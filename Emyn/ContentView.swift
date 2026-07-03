@@ -120,6 +120,11 @@ struct ContentView: View {
                 refreshWindowControlMapping()
             }
         }
+        .onChange(of: pipeline.outputFrameSize) { _, _ in
+            deferViewUpdateMutation {
+                refreshWindowControlMapping()
+            }
+        }
         .onReceive(windowControl.$cursorNormalised) { cursor in
             deferViewUpdateMutation {
                 pipeline.setWindowZoomCenter(cursor)
@@ -198,7 +203,7 @@ struct ContentView: View {
 
                 HStack(spacing: 10) {
                     Label("\(pipeline.measuredFramesPerSecond, specifier: "%.0f") fps", systemImage: "speedometer")
-                    Text("\(SharedFrameConfiguration.width)x\(SharedFrameConfiguration.height)")
+                    Text(pipeline.outputFrameSize.dimensionsTitle)
                 }
                 .font(.caption.monospacedDigit())
                 .padding(.horizontal, 10)
@@ -338,6 +343,20 @@ struct ContentView: View {
                             Image(systemName: "arrow.clockwise")
                         }
                         .help("Refresh cameras")
+                    }
+
+                    HStack(spacing: 8) {
+                        fieldLabel("Input Quality")
+
+                        Picker("Input Quality", selection: $pipeline.cameraInputQuality) {
+                            ForEach(CameraInputQuality.allCases) { quality in
+                                Text("\(quality.title) (\(quality.dimensionsTitle))")
+                                    .tag(quality)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                     }
 
                     Button {
@@ -547,12 +566,18 @@ struct ContentView: View {
         HStack(alignment: .top, spacing: 22) {
             controlSection("Output", systemImage: "display") {
                 VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Resolution")
-                        Spacer()
-                        Text("\(SharedFrameConfiguration.width)x\(SharedFrameConfiguration.height)")
-                            .font(.callout.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 6) {
+                        valueHeader("Resolution", value: pipeline.outputFrameSize.dimensionsTitle)
+
+                        Picker("Resolution", selection: $pipeline.outputFrameSize) {
+                            ForEach(OutputFrameSize.allCases) { frameSize in
+                                Text(frameSize.title)
+                                    .tag(frameSize)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .controlSize(.small)
                     }
 
                     outputFlipButtons
@@ -1253,7 +1278,8 @@ struct BackgroundRemovalSettingsView: View {
 
                 Picker("Analysis", selection: $pipeline.analysisResolution) {
                     ForEach(SegmentationAnalysisResolution.allCases) { resolution in
-                        Text("\(resolution.title) (\(resolution.dimensionsTitle))").tag(resolution)
+                        Text("\(resolution.title) (\(resolution.dimensionsTitle(for: pipeline.outputFrameSize)))")
+                            .tag(resolution)
                     }
                 }
 

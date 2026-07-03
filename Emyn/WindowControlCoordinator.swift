@@ -14,10 +14,12 @@ final class WindowControlCoordinator: ObservableObject {
 
     private var session: WindowCaptureSession?
     private var secureInputPollTask: Task<Void, Never>?
-    private static let outputSize = CGSize(
-        width: SharedFrameConfiguration.width,
-        height: SharedFrameConfiguration.height
-    )
+    private static var outputSize: CGSize {
+        CGSize(
+            width: SharedFrameConfiguration.outputFrameSize.width,
+            height: SharedFrameConfiguration.outputFrameSize.height
+        )
+    }
     private static let secureKeyboardEntryMessage =
         "keyboard forwarding unavailable: another app has Secure Keyboard Entry enabled " +
         "(e.g. a password field, 1Password, or a terminal's Secure Keyboard Entry)"

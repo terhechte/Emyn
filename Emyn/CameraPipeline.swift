@@ -18,6 +18,47 @@ struct CameraDeviceInfo: Identifiable, Equatable {
     let detail: String
 }
 
+enum CameraInputQuality: String, CaseIterable, Identifiable {
+    case hd720
+    case hd1080
+    case uhd4K
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .hd720:
+            return "720p"
+        case .hd1080:
+            return "1080p"
+        case .uhd4K:
+            return "4K"
+        }
+    }
+
+    var dimensionsTitle: String {
+        switch self {
+        case .hd720:
+            return "1280x720"
+        case .hd1080:
+            return "1920x1080"
+        case .uhd4K:
+            return "3840x2160"
+        }
+    }
+
+    var sessionPreset: AVCaptureSession.Preset {
+        switch self {
+        case .hd720:
+            return .hd1280x720
+        case .hd1080:
+            return .hd1920x1080
+        case .uhd4K:
+            return .hd4K3840x2160
+        }
+    }
+}
+
 enum SegmentationQuality: String, CaseIterable, Identifiable {
     case fast
     case balanced
@@ -58,18 +99,22 @@ enum SegmentationAnalysisResolution: String, CaseIterable, Identifiable {
     }
 
     var dimensionsTitle: String {
-        let dimensions = pixelDimensions
+        dimensionsTitle(for: SharedFrameConfiguration.outputFrameSize)
+    }
+
+    func dimensionsTitle(for outputFrameSize: OutputFrameSize) -> String {
+        let dimensions = pixelDimensions(for: outputFrameSize)
         return "\(dimensions.width)x\(dimensions.height)"
     }
 
-    var pixelDimensions: (width: Int, height: Int) {
+    func pixelDimensions(for outputFrameSize: OutputFrameSize) -> (width: Int, height: Int) {
         switch self {
         case .low:
             return (384, 216)
         case .half:
-            return (SharedFrameConfiguration.width / 2, SharedFrameConfiguration.height / 2)
+            return (outputFrameSize.width / 2, outputFrameSize.height / 2)
         case .full:
-            return (SharedFrameConfiguration.width, SharedFrameConfiguration.height)
+            return (outputFrameSize.width, outputFrameSize.height)
         }
     }
 }
@@ -256,6 +301,7 @@ private struct ProcessingSettings {
     var backgroundMediaAlignment: BackgroundContentAlignment = .middleCenter
     var windowBackgroundFit: BackgroundMediaFit = .fill
     var windowBackgroundAlignment: BackgroundContentAlignment = .middleCenter
+    var outputFrameSize: OutputFrameSize = SharedFrameConfiguration.outputFrameSize
     var outputFlipHorizontal = false
     var outputFlipVertical = false
     var ntscEffectEnabled = false
@@ -431,6 +477,13 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
+    @Published var cameraInputQuality: CameraInputQuality = .hd720 {
+        didSet {
+            guard oldValue != cameraInputQuality, isRunning else { return }
+            restart()
+        }
+    }
+
     @Published var backgroundRemovalEnabled = true {
         didSet {
             updateSettings { $0.backgroundRemovalEnabled = self.backgroundRemovalEnabled }
@@ -506,6 +559,25 @@ final class CameraPipeline: NSObject, ObservableObject {
 
     @Published var windowBackgroundAlignment: BackgroundContentAlignment = .middleCenter {
         didSet { updateSettings { $0.windowBackgroundAlignment = self.windowBackgroundAlignment } }
+    }
+
+    @Published var outputFrameSize: OutputFrameSize = SharedFrameConfiguration.outputFrameSize {
+        didSet {
+            guard oldValue != outputFrameSize else { return }
+
+            let newValue = outputFrameSize
+            SharedFrameConfiguration.outputFrameSize = newValue
+            updateSettings { $0.outputFrameSize = newValue }
+            clearMask()
+
+            renderQueue.async {
+                self.resetOutputResources(for: newValue)
+            }
+
+            if hasWindowBackgroundSelection {
+                startActiveWindowBackgroundCapture(statusPrefix: "Resizing")
+            }
+        }
     }
 
     @Published var outputFlipHorizontal = false {
@@ -588,6 +660,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     private var latestMask: CIImage?
     private var latestRenderMask: CIImage?
     private var outputPixelBufferPool: CVPixelBufferPool?
+    private var outputPixelBufferPoolSize = CGSize(width: 0, height: 0)
     private var analysisPixelBufferPool: CVPixelBufferPool?
     private var analysisPixelBufferPoolSize = CGSize(width: 0, height: 0)
     private var maskPixelBufferPool: CVPixelBufferPool?
@@ -599,6 +672,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     private var confettiOverlayPixelBufferPool: CVPixelBufferPool?
     private var confettiOverlayPixelBufferPoolSize = CGSize(width: 0, height: 0)
     private var outputFormatDescription: CMFormatDescription?
+    private var outputFormatDescriptionSize = CGSize(width: 0, height: 0)
     private var frameCounter: UInt64 = 0
     private var segmentationInFlight = false
     private var renderedFrameCounter = 0
@@ -629,14 +703,17 @@ final class CameraPipeline: NSObject, ObservableObject {
 
         super.init()
 
+        settings.outputFrameSize = outputFrameSize
         segmentationRequest.qualityLevel = quality.visionQualityLevel
         segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        let outputSize = CGSize(width: outputFrameSize.width, height: outputFrameSize.height)
         outputPixelBufferPool = Self.makePixelBufferPool(
-            width: SharedFrameConfiguration.width,
-            height: SharedFrameConfiguration.height,
+            width: outputFrameSize.width,
+            height: outputFrameSize.height,
             pixelFormat: SharedFrameConfiguration.pixelFormat
         )
-        let analysisDimensions = analysisResolution.pixelDimensions
+        outputPixelBufferPoolSize = outputSize
+        let analysisDimensions = analysisResolution.pixelDimensions(for: outputFrameSize)
         analysisPixelBufferPool = Self.makePixelBufferPool(
             width: analysisDimensions.width,
             height: analysisDimensions.height,
@@ -647,11 +724,12 @@ final class CameraPipeline: NSObject, ObservableObject {
         CMVideoFormatDescriptionCreate(
             allocator: kCFAllocatorDefault,
             codecType: SharedFrameConfiguration.pixelFormat,
-            width: Int32(SharedFrameConfiguration.width),
-            height: Int32(SharedFrameConfiguration.height),
+            width: Int32(outputFrameSize.width),
+            height: Int32(outputFrameSize.height),
             extensions: nil,
             formatDescriptionOut: &outputFormatDescription
         )
+        outputFormatDescriptionSize = outputSize
 
         refreshCameras()
         if frameWriter == nil {
@@ -913,6 +991,7 @@ final class CameraPipeline: NSObject, ObservableObject {
 
     private func configureAndStartCapture() {
         let cameraID = selectedCameraID
+        let requestedInputQuality = cameraInputQuality
         captureQueue.async {
             guard let device = Self.discoverCameraDevices().first(where: { $0.uniqueID == cameraID })
                     ?? Self.discoverCameraDevices().first else {
@@ -922,7 +1001,6 @@ final class CameraPipeline: NSObject, ObservableObject {
 
             do {
                 self.captureSession.beginConfiguration()
-                self.captureSession.sessionPreset = .hd1280x720
                 self.captureSession.inputs.forEach { self.captureSession.removeInput($0) }
                 self.captureSession.outputs.forEach { self.captureSession.removeOutput($0) }
 
@@ -934,6 +1012,10 @@ final class CameraPipeline: NSObject, ObservableObject {
                 }
 
                 self.captureSession.addInput(input)
+                let appliedInputQuality = Self.applyCameraInputQuality(
+                    requestedInputQuality,
+                    to: self.captureSession
+                )
                 self.videoOutput.alwaysDiscardsLateVideoFrames = true
                 self.videoOutput.videoSettings = [
                     kCVPixelBufferPixelFormatTypeKey as String: SharedFrameConfiguration.pixelFormat
@@ -953,7 +1035,13 @@ final class CameraPipeline: NSObject, ObservableObject {
                 self.clearMask()
                 DispatchQueue.main.async {
                     self.isRunning = true
-                    self.statusText = "Running"
+                    if appliedInputQuality == requestedInputQuality {
+                        self.statusText = "Running"
+                    } else if let appliedInputQuality {
+                        self.statusText = "Running at \(appliedInputQuality.title) input"
+                    } else {
+                        self.statusText = "Running with camera default input"
+                    }
                     self.updateBackgroundMediaPlaybackState()
                 }
             } catch {
@@ -961,6 +1049,35 @@ final class CameraPipeline: NSObject, ObservableObject {
                 self.setStatus(error.localizedDescription)
             }
         }
+    }
+
+    private static func applyCameraInputQuality(
+        _ requestedInputQuality: CameraInputQuality,
+        to captureSession: AVCaptureSession
+    ) -> CameraInputQuality? {
+        if captureSession.canSetSessionPreset(requestedInputQuality.sessionPreset) {
+            captureSession.sessionPreset = requestedInputQuality.sessionPreset
+            return requestedInputQuality
+        }
+
+        let qualities = CameraInputQuality.allCases
+        guard let requestedIndex = qualities.firstIndex(of: requestedInputQuality) else {
+            return nil
+        }
+
+        for quality in qualities[...requestedIndex].reversed() where captureSession.canSetSessionPreset(quality.sessionPreset) {
+            captureSession.sessionPreset = quality.sessionPreset
+            return quality
+        }
+
+        if requestedIndex + 1 < qualities.endIndex {
+            for quality in qualities[(requestedIndex + 1)...] where captureSession.canSetSessionPreset(quality.sessionPreset) {
+                captureSession.sessionPreset = quality.sessionPreset
+                return quality
+            }
+        }
+
+        return nil
     }
 
     private static func discoverCameraDevices() -> [AVCaptureDevice] {
@@ -1100,7 +1217,7 @@ final class CameraPipeline: NSObject, ObservableObject {
 
     private func performSegmentation(on pixelBuffer: CVPixelBuffer) {
         let settings = currentSettings()
-        let analysisDimensions = settings.analysisResolution.pixelDimensions
+        let analysisDimensions = settings.analysisResolution.pixelDimensions(for: settings.outputFrameSize)
         let analysisSize = CGSize(width: analysisDimensions.width, height: analysisDimensions.height)
 
         guard let analysisPixelBuffer = makeAnalysisPixelBuffer(size: analysisSize) else {
@@ -1136,10 +1253,7 @@ final class CameraPipeline: NSObject, ObservableObject {
                 return
             }
 
-            let outputSize = CGSize(
-                width: SharedFrameConfiguration.width,
-                height: SharedFrameConfiguration.height
-            )
+            let outputSize = CGSize(width: settings.outputFrameSize.width, height: settings.outputFrameSize.height)
             guard let materializedRenderMask = materializedRenderMaskImage(
                 from: materializedMask,
                 to: CGRect(origin: .zero, size: outputSize)
@@ -1178,17 +1292,14 @@ final class CameraPipeline: NSObject, ObservableObject {
     }
 
     private func render(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
-        guard let outputPixelBuffer = makeOutputPixelBuffer() else {
+        let settings = currentSettings()
+        let outputSize = CGSize(width: settings.outputFrameSize.width, height: settings.outputFrameSize.height)
+        guard let outputPixelBuffer = makeOutputPixelBuffer(size: outputSize) else {
             return
         }
 
-        let outputSize = CGSize(
-            width: SharedFrameConfiguration.width,
-            height: SharedFrameConfiguration.height
-        )
         let outputExtent = CGRect(origin: .zero, size: outputSize)
         let foreground = aspectFillImage(from: pixelBuffer, targetSize: outputSize)
-        let settings = currentSettings()
         let renderTime = CACurrentMediaTime()
         let effects = settings.presentationEffects.resolved(at: renderTime)
 
@@ -1875,7 +1986,21 @@ final class CameraPipeline: NSObject, ObservableObject {
         ))
     }
 
-    private func makeOutputPixelBuffer() -> CVPixelBuffer? {
+    private func makeOutputPixelBuffer(size: CGSize) -> CVPixelBuffer? {
+        let width = Int(size.width.rounded())
+        let height = Int(size.height.rounded())
+        guard width > 0, height > 0 else { return nil }
+
+        let integralSize = CGSize(width: width, height: height)
+        if outputPixelBufferPool == nil || outputPixelBufferPoolSize != integralSize {
+            outputPixelBufferPool = Self.makePixelBufferPool(
+                width: width,
+                height: height,
+                pixelFormat: SharedFrameConfiguration.pixelFormat
+            )
+            outputPixelBufferPoolSize = integralSize
+        }
+
         guard let outputPixelBufferPool else { return nil }
         var pixelBuffer: CVPixelBuffer?
         CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, outputPixelBufferPool, &pixelBuffer)
@@ -2013,6 +2138,14 @@ final class CameraPipeline: NSObject, ObservableObject {
     }
 
     private func makeSampleBuffer(from pixelBuffer: CVPixelBuffer, timestamp: CMTime) -> CMSampleBuffer? {
+        let formatSize = CGSize(
+            width: CVPixelBufferGetWidth(pixelBuffer),
+            height: CVPixelBufferGetHeight(pixelBuffer)
+        )
+        if outputFormatDescription == nil || outputFormatDescriptionSize != formatSize {
+            updateOutputFormatDescription(size: formatSize)
+        }
+
         guard let outputFormatDescription else { return nil }
 
         var timing = CMSampleTimingInfo(
@@ -2032,6 +2165,45 @@ final class CameraPipeline: NSObject, ObservableObject {
             sampleBufferOut: &sampleBuffer
         )
         return sampleBuffer
+    }
+
+    private func resetOutputResources(for frameSize: OutputFrameSize) {
+        let size = CGSize(width: frameSize.width, height: frameSize.height)
+        outputPixelBufferPool = Self.makePixelBufferPool(
+            width: frameSize.width,
+            height: frameSize.height,
+            pixelFormat: SharedFrameConfiguration.pixelFormat
+        )
+        outputPixelBufferPoolSize = size
+        updateOutputFormatDescription(size: size)
+
+        analysisPixelBufferPool = nil
+        analysisPixelBufferPoolSize = .zero
+        renderMaskPixelBufferPool = nil
+        renderMaskPixelBufferPoolSize = .zero
+        ntscPixelBufferPool = nil
+        ntscPixelBufferPoolSize = .zero
+        confettiOverlayPixelBufferPool = nil
+        confettiOverlayPixelBufferPoolSize = .zero
+    }
+
+    private func updateOutputFormatDescription(size: CGSize) {
+        outputFormatDescription = nil
+        outputFormatDescriptionSize = .zero
+
+        let width = Int32(size.width.rounded())
+        let height = Int32(size.height.rounded())
+        guard width > 0, height > 0 else { return }
+
+        CMVideoFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            codecType: SharedFrameConfiguration.pixelFormat,
+            width: width,
+            height: height,
+            extensions: nil,
+            formatDescriptionOut: &outputFormatDescription
+        )
+        outputFormatDescriptionSize = CGSize(width: Int(width), height: Int(height))
     }
 
     private static func makePixelBufferPool(
@@ -2174,7 +2346,7 @@ final class CameraPipeline: NSObject, ObservableObject {
             self.clearLatestWindowBackgroundPixelBuffer()
 
             let filter = SCContentFilter(desktopIndependentWindow: window)
-            let configuration = Self.makeWindowBackgroundStreamConfiguration(for: window.frame)
+            let configuration = self.makeWindowBackgroundStreamConfiguration(for: window.frame)
             let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
 
             do {
@@ -2235,9 +2407,12 @@ final class CameraPipeline: NSObject, ObservableObject {
         stream.stopCapture { _ in }
     }
 
-    private static func makeWindowBackgroundStreamConfiguration(for frame: CGRect) -> SCStreamConfiguration {
+    private func makeWindowBackgroundStreamConfiguration(for frame: CGRect) -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
-        let captureSize = windowBackgroundCaptureSize(for: frame)
+        let captureSize = Self.windowBackgroundCaptureSize(
+            for: frame,
+            outputFrameSize: currentSettings().outputFrameSize
+        )
         configuration.width = captureSize.width
         configuration.height = captureSize.height
         configuration.pixelFormat = SharedFrameConfiguration.pixelFormat
@@ -2248,17 +2423,20 @@ final class CameraPipeline: NSObject, ObservableObject {
         configuration.preservesAspectRatio = true
         configuration.ignoreShadowsSingleWindow = true
         configuration.shouldBeOpaque = false
-        configuration.backgroundColor = screenCaptureBackgroundColor
+        configuration.backgroundColor = Self.screenCaptureBackgroundColor
         return configuration
     }
 
-    private static func windowBackgroundCaptureSize(for frame: CGRect) -> (width: Int, height: Int) {
+    private static func windowBackgroundCaptureSize(
+        for frame: CGRect,
+        outputFrameSize: OutputFrameSize
+    ) -> (width: Int, height: Int) {
         let scale = backingScaleFactor(for: frame)
         return WindowBackgroundCaptureSizer.captureSize(
             rawWidth: frame.width * scale,
             rawHeight: frame.height * scale,
-            maxWidth: SharedFrameConfiguration.width,
-            maxHeight: SharedFrameConfiguration.height
+            maxWidth: outputFrameSize.width,
+            maxHeight: outputFrameSize.height
         )
     }
 
