@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		398815E14FDF9873296C2392 /* PlatformMacOSKit in Frameworks */ = {isa = PBXBuildFile; productRef = 22FF1A5302340D0E84B52358 /* PlatformMacOSKit */; };
+		4D5A00012FF7000000E2BC47 /* CTranscribe in Frameworks */ = {isa = PBXBuildFile; productRef = 4D5A00022FF7000000E2BC47 /* CTranscribe */; };
 		4D1E00032FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = 4D1E00012FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		4D1E00042FF5000000E2BC47 /* Emyn/SharedFrameStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D1E00052FF5000000E2BC47 /* Emyn/SharedFrameStore.swift */; };
 /* End PBXBuildFile section */
@@ -80,6 +81,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4D5A00012FF7000000E2BC47 /* CTranscribe in Frameworks */,
 				398815E14FDF9873296C2392 /* PlatformMacOSKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -159,6 +161,7 @@
 			name = Emyn;
 			packageProductDependencies = (
 				22FF1A5302340D0E84B52358 /* PlatformMacOSKit */,
+				4D5A00022FF7000000E2BC47 /* CTranscribe */,
 			);
 			productName = Emyn;
 			productReference = 4D3915AE2FF4F92200E2BC47 /* Emyn.app */;
@@ -193,6 +196,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				8F550D1E0CC3C9A863ECC0BE /* XCLocalSwiftPackageReference "platform-macos/swift/PlatformMacOSKit" */,
+				4D5A00032FF7000000E2BC47 /* XCLocalSwiftPackageReference "transcribe-cpp-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4D3915AF2FF4F92200E2BC47 /* Products */;
@@ -453,6 +457,7 @@
 				INFOPLIST_KEY_NSCameraUseExternalDeviceType = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSInputMonitoringUsageDescription = "Emyn listens for keyboard input while you are controlling a selected app window.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Emyn uses the microphone to transcribe speech for TTX captions.";
 				INFOPLIST_KEY_NSSystemExtensionUsageDescription = "Emyn installs a virtual camera that makes the processed feed available to video conferencing apps.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -491,6 +496,7 @@
 				INFOPLIST_KEY_NSCameraUseExternalDeviceType = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSInputMonitoringUsageDescription = "Emyn listens for keyboard input while you are controlling a selected app window.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Emyn uses the microphone to transcribe speech for TTX captions.";
 				INFOPLIST_KEY_NSSystemExtensionUsageDescription = "Emyn installs a virtual camera that makes the processed feed available to video conferencing apps.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -546,6 +552,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "platform-macos/swift/PlatformMacOSKit";
 		};
+		4D5A00032FF7000000E2BC47 /* XCLocalSwiftPackageReference "transcribe-cpp-swift" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "transcribe-cpp-swift";
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -553,6 +563,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 8F550D1E0CC3C9A863ECC0BE /* XCLocalSwiftPackageReference "platform-macos/swift/PlatformMacOSKit" */;
 			productName = PlatformMacOSKit;
+		};
+		4D5A00022FF7000000E2BC47 /* CTranscribe */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4D5A00032FF7000000E2BC47 /* XCLocalSwiftPackageReference "transcribe-cpp-swift" */;
+			productName = CTranscribe;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -14,6 +14,8 @@ private enum ControlTab: String, CaseIterable, Identifiable {
     case background
     case appWindow
     case functionKeys
+    case speechToText
+    case settings
     case present
 
     var id: String { rawValue }
@@ -24,6 +26,8 @@ private enum ControlTab: String, CaseIterable, Identifiable {
         case .background: return "Background"
         case .appWindow: return "App Window"
         case .functionKeys: return "Function Keys"
+        case .speechToText: return "Speech"
+        case .settings: return "Settings"
         case .present: return "Present"
         }
     }
@@ -34,7 +38,23 @@ private enum ControlTab: String, CaseIterable, Identifiable {
         case .background: return "photo.fill"
         case .appWindow: return "rectangle.on.rectangle"
         case .functionKeys: return "keyboard"
+        case .speechToText: return "waveform.and.mic"
+        case .settings: return "gearshape.fill"
         case .present: return "rectangle.inset.filled.and.person.filled"
+        }
+    }
+}
+
+private enum AppSettingsPane: String, CaseIterable, Identifiable {
+    case sound
+    case models
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .sound: return "Sound"
+        case .models: return "Models"
         }
     }
 }
@@ -52,6 +72,7 @@ struct ContentView: View {
     private static let softwareCursorBaseSize: CGFloat = 32
     private static let softwareCursorDefaultScale: CGFloat = 2
     private static let softwareCursorHotspot = CGPoint(x: 2, y: 2)
+    private static let speechTestSentence = "The quick brown fox jumps over the lazy dog"
     private static let softwareCursorImage: NSImage? = {
         if let url = Bundle.main.url(forResource: "cursor", withExtension: "png") {
             return NSImage(contentsOf: url)
@@ -65,7 +86,12 @@ struct ContentView: View {
     @StateObject private var windowBackgroundPicker = WindowBackgroundPickerModel()
     @StateObject private var windowControl = WindowControlCoordinator()
     @StateObject private var functionKeys = FunctionKeyController()
+    @StateObject private var speechToText = SpeechToTextConfiguration()
+    @StateObject private var speechModelDownloader = SpeechToTextModelDownloader()
+    @StateObject private var speechMicrophoneMonitor = SpeechToTextMicrophoneMonitor()
     @State private var selectedTab: ControlTab = .camera
+    @State private var selectedAppSettingsPane: AppSettingsPane = .sound
+    @State private var isSpeechTestSentenceVisible = false
     @State private var isPreviewCompact = false
     @State private var isPresentationNotesSidebarVisible = false
     @State private var isWindowBackgroundPickerPresented = false
@@ -117,9 +143,19 @@ struct ContentView: View {
         .onDisappear {
             cursorAttentionTask?.cancel()
             functionKeys.stopMonitoring()
+            speechMicrophoneMonitor.stopMonitoring()
             windowControl.deactivate()
             pipeline.stop()
             pipeline.clearWindowBackground()
+        }
+        .onChange(of: selectedTab) { _, _ in
+            updateSpeechMicrophoneMonitoring()
+        }
+        .onChange(of: selectedAppSettingsPane) { _, _ in
+            updateSpeechMicrophoneMonitoring()
+        }
+        .onChange(of: speechToText.selectedMicrophoneID) { _, _ in
+            updateSpeechMicrophoneMonitoring()
         }
         .onChange(of: excludeFunctionKeysDuringWindowControl) { _, newValue in
             windowControl.setExcludeFunctionKeys(newValue)
@@ -216,6 +252,14 @@ struct ContentView: View {
                 )
                 .background(.black)
 
+                if isSpeechTestSentenceVisible {
+                    SpeechToTextCaptionOverlay(
+                        configuration: speechToText,
+                        text: Self.speechTestSentence
+                    )
+                    .allowsHitTesting(false)
+                }
+
                 if windowControl.isActive, let cursor = windowControl.cursorNormalised {
                     GeometryReader { proxy in
                         let region = windowControl.cursorRegionNormalised
@@ -304,7 +348,7 @@ struct ContentView: View {
 
     private var controlsPanel: some View {
         LiquidGlassSurface(cornerRadius: Self.windowCornerRadius) {
-            ScrollView {
+            ScrollView([.vertical, .horizontal]) {
                 tabContent
                     .padding(22)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -344,6 +388,10 @@ struct ContentView: View {
             appWindowTab
         case .functionKeys:
             functionKeysTab
+        case .speechToText:
+            speechToTextTab
+        case .settings:
+            appSettingsTab
         case .present:
             presentTab
         }
@@ -590,6 +638,208 @@ struct ContentView: View {
             controlSection("Buttons", systemImage: "switch.2") {
                 functionKeyActionButtons
             }
+        }
+    }
+
+    private var speechToTextTab: some View {
+        HStack(alignment: .top, spacing: 22) {
+            compactControlSection("Speech", systemImage: "waveform.and.mic") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Transcribe", isOn: $speechToText.isSpeechToTextEnabled)
+                        .toggleStyle(.switch)
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            isSpeechTestSentenceVisible.toggle()
+                        }
+                    } label: {
+                        Label("Test", systemImage: isSpeechTestSentenceVisible ? "text.bubble.fill" : "text.bubble")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help(isSpeechTestSentenceVisible ? "Hide test sentence" : "Show test sentence")
+                }
+            }
+
+            panelDivider
+
+            controlSection("Captions", systemImage: "captions.bubble") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        fieldLabel("Font")
+
+                        Picker("Font", selection: $speechToText.captionFont) {
+                            ForEach(SpeechToTextCaptionFont.allCases) { font in
+                                Text(font.title).tag(font)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        valueHeader("Size", value: "\(Int(speechToText.captionFontSize.rounded())) pt")
+                        Slider(value: $speechToText.captionFontSize, in: 14...56, step: 1)
+                    }
+
+                    ColorPicker("Font Color", selection: speechCaptionFontColorSelection, supportsOpacity: true)
+                        .controlSize(.small)
+
+                    ColorPicker("Background", selection: speechCaptionBackgroundColorSelection, supportsOpacity: true)
+                        .controlSize(.small)
+                }
+            }
+            .frame(minWidth: 240)
+
+            panelDivider
+
+            controlSection("Layout", systemImage: "text.alignleft") {
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        valueHeader("Width", value: speechToText.captionWidth.title)
+
+                        Picker("Width", selection: $speechToText.captionWidth) {
+                            ForEach(SpeechToTextCaptionWidth.allCases) { width in
+                                Text(width.title).tag(width)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .controlSize(.small)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        valueHeader("Padding", value: "\(Int(speechToText.captionPadding.rounded())) px")
+                        Slider(value: $speechToText.captionPadding, in: 4...48, step: 1)
+                    }
+
+                    Picker("Alignment", selection: $speechToText.captionAlignment) {
+                        ForEach(SpeechToTextCaptionAlignment.allCases) { alignment in
+                            Text(alignment.title).tag(alignment)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                }
+            }
+            .frame(minWidth: 260)
+
+            panelDivider
+
+            controlSection("Preview", systemImage: "rectangle.on.rectangle") {
+                SpeechToTextCaptionPreview(
+                    configuration: speechToText,
+                    text: speechCaptionPreviewText
+                )
+            }
+            .frame(minWidth: 280)
+        }
+    }
+
+    private var appSettingsTab: some View {
+        HStack(alignment: .top, spacing: 22) {
+            controlSection("App Settings", systemImage: "gearshape.fill") {
+                Picker("Settings", selection: $selectedAppSettingsPane) {
+                    ForEach(AppSettingsPane.allCases) { pane in
+                        Text(pane.title).tag(pane)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+            }
+            .frame(width: 240)
+
+            panelDivider
+
+            appSettingsPaneContent
+        }
+    }
+
+    @ViewBuilder
+    private var appSettingsPaneContent: some View {
+        switch selectedAppSettingsPane {
+        case .sound:
+            speechSoundSourceSettings
+        case .models:
+            speechModelSettings
+        }
+    }
+
+    private var speechSoundSourceSettings: some View {
+        HStack(alignment: .top, spacing: 22) {
+            controlSection("Sound Source", systemImage: "mic") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker("Microphone", selection: $speechToText.selectedMicrophoneID) {
+                        Text("System Default").tag("")
+
+                        ForEach(speechMicrophoneMonitor.microphones) { microphone in
+                            Text(microphone.title).tag(microphone.id)
+                        }
+
+                        if shouldShowMissingSelectedMicrophone {
+                            Text("Unavailable Microphone").tag(speechToText.selectedMicrophoneID)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+
+                    SpeechToTextMicrophoneLevelView(
+                        level: speechMicrophoneMonitor.inputLevel,
+                        isMonitoring: speechMicrophoneMonitor.isMonitoring
+                    )
+
+                    HStack(spacing: 8) {
+                        Button {
+                            startSpeechMicrophoneMonitoring()
+                        } label: {
+                            Label("Test", systemImage: "waveform")
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button {
+                            speechMicrophoneMonitor.refreshDevices()
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Refresh microphones")
+                    }
+
+                    statusLine(speechMicrophoneMonitor.statusText)
+                }
+            }
+            .frame(minWidth: 280)
+        }
+    }
+
+    private var speechModelSettings: some View {
+        HStack(alignment: .top, spacing: 22) {
+            controlSection("Speech Model", systemImage: "shippingbox") {
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker("Model", selection: $speechToText.selectedModelID) {
+                        ForEach(SpeechToTextModelDescriptor.builtIn) { model in
+                            Text("\(model.title) (\(model.sizeTitle))")
+                                .tag(model.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+
+                    speechModelSummary(speechToText.selectedModel)
+                    speechModelDownloadControls(speechToText.selectedModel)
+
+                    if speechModelDownloader.activeModelID == speechToText.selectedModel.id {
+                        ProgressView(value: speechModelDownloader.progress)
+                            .progressViewStyle(.linear)
+                    }
+
+                    statusLine(speechModelDownloader.statusText)
+                    statusLine(speechToText.backendStatusText)
+                }
+            }
+            .frame(minWidth: 360)
         }
     }
 
@@ -1019,6 +1269,58 @@ struct ContentView: View {
         }
     }
 
+    private func speechModelSummary(_ model: SpeechToTextModelDescriptor) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            valueHeader("Size", value: model.sizeTitle)
+            statusLine(model.detail)
+
+            if let path = speechToText.localModelPathForBackend() {
+                Text(path)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+    }
+
+    private func speechModelDownloadControls(_ model: SpeechToTextModelDescriptor) -> some View {
+        let isDownloaded = speechModelDownloader.isModelDownloaded(model)
+        let isActiveDownload = speechModelDownloader.activeModelID == model.id
+
+        return HStack(spacing: 8) {
+            Button {
+                if isActiveDownload {
+                    speechModelDownloader.cancel()
+                } else {
+                    speechModelDownloader.download(model)
+                }
+            } label: {
+                Label(
+                    isActiveDownload ? "Cancel" : isDownloaded ? "Downloaded" : "Download",
+                    systemImage: isActiveDownload ? "xmark.circle" : isDownloaded ? "checkmark.circle.fill" : "arrow.down.circle"
+                )
+            }
+            .disabled(isDownloaded && !isActiveDownload)
+
+            Button {
+                speechModelDownloader.revealDownloadedModel(model)
+            } label: {
+                Image(systemName: "folder")
+            }
+            .disabled(!isDownloaded)
+            .help("Reveal downloaded model")
+
+            Button(role: .destructive) {
+                speechModelDownloader.deleteDownloadedModel(model)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .disabled(!isDownloaded || isActiveDownload)
+            .help("Delete downloaded model")
+        }
+    }
+
     @ViewBuilder
     private var windowControlControls: some View {
         if let activeWindowBackgroundOption = pipeline.activeWindowBackgroundOption {
@@ -1065,6 +1367,21 @@ struct ContentView: View {
             content()
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func compactControlSection<Content: View>(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: systemImage)
+                .font(.headline)
+                .lineLimit(1)
+
+            content()
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var panelDivider: some View {
@@ -1144,6 +1461,47 @@ struct ContentView: View {
         } set: { newValue in
             pipeline.ntscPreset = newValue
         }
+    }
+
+    private var speechCaptionFontColorSelection: Binding<Color> {
+        Binding {
+            speechToText.captionFontColor.swiftUIColor
+        } set: { newValue in
+            speechToText.captionFontColor = SpeechToTextColor(color: newValue)
+        }
+    }
+
+    private var speechCaptionBackgroundColorSelection: Binding<Color> {
+        Binding {
+            speechToText.captionBackgroundColor.swiftUIColor
+        } set: { newValue in
+            speechToText.captionBackgroundColor = SpeechToTextColor(color: newValue)
+        }
+    }
+
+    private var speechCaptionPreviewText: String {
+        isSpeechTestSentenceVisible ? Self.speechTestSentence : "Live captions appear here"
+    }
+
+    private var shouldShowMissingSelectedMicrophone: Bool {
+        !speechToText.selectedMicrophoneID.isEmpty
+            && !speechMicrophoneMonitor.microphones.contains { $0.id == speechToText.selectedMicrophoneID }
+    }
+
+    private var shouldMonitorSpeechMicrophone: Bool {
+        selectedTab == .settings && selectedAppSettingsPane == .sound
+    }
+
+    private func updateSpeechMicrophoneMonitoring() {
+        if shouldMonitorSpeechMicrophone {
+            startSpeechMicrophoneMonitoring()
+        } else {
+            speechMicrophoneMonitor.stopMonitoring()
+        }
+    }
+
+    private func startSpeechMicrophoneMonitoring() {
+        speechMicrophoneMonitor.startMonitoring(deviceID: speechToText.selectedMicrophoneID)
     }
 
     private func isFunctionKeyActionDisabled(_ action: FunctionKeyAction) -> Bool {
@@ -1359,6 +1717,93 @@ private struct FunctionKeySummaryPill: View {
         .overlay {
             Capsule()
                 .stroke(.white.opacity(0.10), lineWidth: 1)
+        }
+    }
+}
+
+private struct SpeechToTextMicrophoneLevelView: View {
+    let level: Double
+    let isMonitoring: Bool
+
+    private var activeBarCount: Int {
+        guard isMonitoring else { return 0 }
+        return max(0, min(5, Int(ceil(max(0, min(1, level)) * 5))))
+    }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 6) {
+            ForEach(0..<5, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(index < activeBarCount ? barColor(for: index) : Color.secondary.opacity(0.18))
+                    .frame(width: 12, height: CGFloat(10 + index * 6))
+            }
+
+            Text(isMonitoring ? "Live input" : "Input idle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(height: 36, alignment: .bottomLeading)
+        .animation(.easeOut(duration: 0.12), value: activeBarCount)
+        .accessibilityLabel("Microphone input level")
+        .accessibilityValue("\(activeBarCount) of 5 bars")
+    }
+
+    private func barColor(for index: Int) -> Color {
+        switch index {
+        case 0...2:
+            return .green
+        case 3:
+            return .yellow
+        default:
+            return .red
+        }
+    }
+}
+
+private struct SpeechToTextCaptionOverlay: View {
+    @ObservedObject var configuration: SpeechToTextConfiguration
+    let text: String
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: configuration.captionAlignment.swiftUIAlignment) {
+                Text(text)
+                    .font(configuration.captionFont.swiftUIFont(size: CGFloat(configuration.captionFontSize)))
+                    .foregroundStyle(configuration.captionFontColor.swiftUIColor)
+                    .multilineTextAlignment(configuration.captionAlignment.textAlignment)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.72)
+                    .padding(CGFloat(configuration.captionPadding))
+                    .frame(
+                        width: max(120, proxy.size.width * CGFloat(configuration.captionWidth.rawValue)),
+                        alignment: configuration.captionAlignment == .bottomLeft ? .leading : .center
+                    )
+                    .background(
+                        configuration.captionBackgroundColor.swiftUIColor,
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+                    .padding(10)
+            }
+        }
+    }
+}
+
+private struct SpeechToTextCaptionPreview: View {
+    @ObservedObject var configuration: SpeechToTextConfiguration
+    let text: String
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.black.opacity(0.72))
+
+            SpeechToTextCaptionOverlay(configuration: configuration, text: text)
+        }
+        .frame(height: 130)
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
         }
     }
 }
