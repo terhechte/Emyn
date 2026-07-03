@@ -564,6 +564,12 @@ private struct RenderFrame {
     let timestamp: CMTime
 }
 
+private struct WindowBackgroundFrameSnapshot {
+    let pixelBuffer: CVPixelBuffer
+    let fadeSourcePixelBuffer: CVPixelBuffer?
+    let fadeProgress: Double
+}
+
 final class CameraPipeline: NSObject, ObservableObject {
     @Published private(set) var cameras: [CameraDeviceInfo] = []
     @Published var selectedCameraID: String = "" {
@@ -757,6 +763,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     private let segmentationRequest = VNGeneratePersonSegmentationRequest()
     private let frameWriter: SharedFrameWriter?
     private static let screenCaptureBackgroundColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0)
+    private static let windowBackgroundCycleFadeDuration: CFTimeInterval = 0.5
     private static let confettiParticleCount = 144
     private static let confettiParticleScale: CGFloat = 1.3
     private static let confettiPalette: [(red: CGFloat, green: CGFloat, blue: CGFloat)] = [
@@ -793,6 +800,10 @@ final class CameraPipeline: NSObject, ObservableObject {
     private var lastFPSUpdate = CACurrentMediaTime()
     private var windowBackgroundStream: SCStream?
     private var latestWindowBackgroundPixelBuffer: CVPixelBuffer?
+    private var windowBackgroundFadeSourcePixelBuffer: CVPixelBuffer?
+    private var windowBackgroundFadeStartTime: CFTimeInterval?
+    private var windowBackgroundFadeDuration: CFTimeInterval = 0
+    private var shouldFadeNextWindowBackgroundFrame = false
     private var backgroundMediaImage: CIImage?
     private var backgroundMediaPlayer: AVPlayer?
     private var backgroundMediaVideoOutput: AVPlayerItemVideoOutput?
@@ -1024,7 +1035,7 @@ final class CameraPipeline: NSObject, ObservableObject {
             activeWindowBackgroundIndex = selectedWindowBackgroundOptions.startIndex
         }
 
-        startActiveWindowBackgroundCapture(statusPrefix: "Switching to")
+        startActiveWindowBackgroundCapture(statusPrefix: "Switching to", animated: true)
         return activeWindowBackgroundOption
     }
 
@@ -1422,7 +1433,8 @@ final class CameraPipeline: NSObject, ObservableObject {
                 settings: settings,
                 effects: effects,
                 foreground: foreground,
-                outputExtent: outputExtent
+                outputExtent: outputExtent,
+                at: renderTime
             )
 
             renderedImage = composePerson(
@@ -1495,7 +1507,8 @@ final class CameraPipeline: NSObject, ObservableObject {
         settings: ProcessingSettings,
         effects: ResolvedPresentationEffects,
         foreground: CIImage,
-        outputExtent: CGRect
+        outputExtent: CGRect,
+        at time: CFTimeInterval
     ) -> CIImage {
         let baseBackground = baseBackgroundImage(
             settings: settings,
@@ -1503,7 +1516,7 @@ final class CameraPipeline: NSObject, ObservableObject {
             outputExtent: outputExtent
         )
 
-        guard let pixelBuffer = currentWindowBackgroundPixelBuffer() else {
+        guard let frameSnapshot = currentWindowBackgroundFrame(at: time) else {
             return baseBackground
         }
 
@@ -1512,6 +1525,50 @@ final class CameraPipeline: NSObject, ObservableObject {
             return baseBackground
         }
 
+        var windowBackground = preparedWindowBackgroundImage(
+            from: frameSnapshot.pixelBuffer,
+            settings: settings,
+            effects: effects,
+            outputExtent: outputExtent,
+            backing: baseBackground
+        )
+
+        if let fadeSourcePixelBuffer = frameSnapshot.fadeSourcePixelBuffer,
+           frameSnapshot.fadeProgress < 0.999 {
+            let fadeSourceBackground = preparedWindowBackgroundImage(
+                from: fadeSourcePixelBuffer,
+                settings: settings,
+                effects: effects,
+                outputExtent: outputExtent,
+                backing: baseBackground
+            )
+            windowBackground = windowBackground
+                .applyingFilter("CIMix", parameters: [
+                    kCIInputBackgroundImageKey: fadeSourceBackground,
+                    kCIInputAmountKey: max(0, min(1, frameSnapshot.fadeProgress))
+                ])
+                .cropped(to: outputExtent)
+        }
+
+        guard opacity < 0.999 else {
+            return windowBackground
+        }
+
+        return windowBackground
+            .applyingFilter("CIMix", parameters: [
+                kCIInputBackgroundImageKey: baseBackground,
+                kCIInputAmountKey: opacity
+            ])
+            .cropped(to: outputExtent)
+    }
+
+    private func preparedWindowBackgroundImage(
+        from pixelBuffer: CVPixelBuffer,
+        settings: ProcessingSettings,
+        effects: ResolvedPresentationEffects,
+        outputExtent: CGRect,
+        backing baseBackground: CIImage
+    ) -> CIImage {
         var windowBackground = fittedMediaBackgroundImage(
             CIImage(cvPixelBuffer: pixelBuffer),
             fit: settings.windowBackgroundFit,
@@ -1529,16 +1586,7 @@ final class CameraPipeline: NSObject, ObservableObject {
             )
         }
 
-        guard opacity < 0.999 else {
-            return windowBackground
-        }
-
         return windowBackground
-            .applyingFilter("CIMix", parameters: [
-                kCIInputBackgroundImageKey: baseBackground,
-                kCIInputAmountKey: opacity
-            ])
-            .cropped(to: outputExtent)
     }
 
     private func baseBackgroundImage(
@@ -2443,25 +2491,86 @@ final class CameraPipeline: NSObject, ObservableObject {
         return image
     }
 
-    private func currentWindowBackgroundPixelBuffer() -> CVPixelBuffer? {
+    private func currentWindowBackgroundFrame(at time: CFTimeInterval) -> WindowBackgroundFrameSnapshot? {
         backgroundLock.lock()
         defer { backgroundLock.unlock() }
-        return latestWindowBackgroundPixelBuffer
+
+        guard let pixelBuffer = latestWindowBackgroundPixelBuffer else {
+            return nil
+        }
+
+        guard let fadeSourcePixelBuffer = windowBackgroundFadeSourcePixelBuffer,
+              let fadeStartTime = windowBackgroundFadeStartTime,
+              windowBackgroundFadeDuration > 0 else {
+            return WindowBackgroundFrameSnapshot(
+                pixelBuffer: pixelBuffer,
+                fadeSourcePixelBuffer: nil,
+                fadeProgress: 1
+            )
+        }
+
+        let rawProgress = max(0, min(1, (time - fadeStartTime) / windowBackgroundFadeDuration))
+        guard rawProgress < 1 else {
+            windowBackgroundFadeSourcePixelBuffer = nil
+            windowBackgroundFadeStartTime = nil
+            windowBackgroundFadeDuration = 0
+            return WindowBackgroundFrameSnapshot(
+                pixelBuffer: pixelBuffer,
+                fadeSourcePixelBuffer: nil,
+                fadeProgress: 1
+            )
+        }
+
+        let easedProgress = rawProgress * rawProgress * (3 - 2 * rawProgress)
+        return WindowBackgroundFrameSnapshot(
+            pixelBuffer: pixelBuffer,
+            fadeSourcePixelBuffer: fadeSourcePixelBuffer,
+            fadeProgress: easedProgress
+        )
     }
 
     private func setLatestWindowBackgroundPixelBuffer(_ pixelBuffer: CVPixelBuffer) {
         backgroundLock.lock()
         latestWindowBackgroundPixelBuffer = pixelBuffer
+        if shouldFadeNextWindowBackgroundFrame {
+            if windowBackgroundFadeSourcePixelBuffer != nil {
+                windowBackgroundFadeStartTime = CACurrentMediaTime()
+                windowBackgroundFadeDuration = Self.windowBackgroundCycleFadeDuration
+            } else {
+                windowBackgroundFadeDuration = 0
+            }
+            shouldFadeNextWindowBackgroundFrame = false
+        }
         backgroundLock.unlock()
     }
 
     private func clearLatestWindowBackgroundPixelBuffer() {
         backgroundLock.lock()
         latestWindowBackgroundPixelBuffer = nil
+        windowBackgroundFadeSourcePixelBuffer = nil
+        windowBackgroundFadeStartTime = nil
+        windowBackgroundFadeDuration = 0
+        shouldFadeNextWindowBackgroundFrame = false
         backgroundLock.unlock()
     }
 
-    private func startActiveWindowBackgroundCapture(statusPrefix: String) {
+    private func prepareWindowBackgroundCycleFade() {
+        backgroundLock.lock()
+        if let latestWindowBackgroundPixelBuffer {
+            windowBackgroundFadeSourcePixelBuffer = latestWindowBackgroundPixelBuffer
+            windowBackgroundFadeStartTime = nil
+            windowBackgroundFadeDuration = Self.windowBackgroundCycleFadeDuration
+            shouldFadeNextWindowBackgroundFrame = true
+        } else {
+            windowBackgroundFadeSourcePixelBuffer = nil
+            windowBackgroundFadeStartTime = nil
+            windowBackgroundFadeDuration = 0
+            shouldFadeNextWindowBackgroundFrame = false
+        }
+        backgroundLock.unlock()
+    }
+
+    private func startActiveWindowBackgroundCapture(statusPrefix: String, animated: Bool = false) {
         guard let activeWindowBackgroundOption,
               let activeWindowBackgroundIndex else {
             selectedWindowBackgroundTitle = nil
@@ -2476,13 +2585,21 @@ final class CameraPipeline: NSObject, ObservableObject {
         )
         selectedWindowBackgroundTitle = title
         windowBackgroundStatusText = "\(statusPrefix) \(title)"
-        startWindowBackgroundCapture(window: activeWindowBackgroundOption.window, title: title)
+        startWindowBackgroundCapture(
+            window: activeWindowBackgroundOption.window,
+            title: title,
+            animated: animated
+        )
     }
 
-    private func startWindowBackgroundCapture(window: SCWindow, title: String) {
+    private func startWindowBackgroundCapture(window: SCWindow, title: String, animated: Bool) {
         screenCaptureQueue.async {
             self.stopWindowBackgroundStream()
-            self.clearLatestWindowBackgroundPixelBuffer()
+            if animated {
+                self.prepareWindowBackgroundCycleFade()
+            } else {
+                self.clearLatestWindowBackgroundPixelBuffer()
+            }
 
             let filter = SCContentFilter(desktopIndependentWindow: window)
             let configuration = self.makeWindowBackgroundStreamConfiguration(for: window.frame)
@@ -2511,6 +2628,7 @@ final class CameraPipeline: NSObject, ObservableObject {
                     }
                 }
             } catch {
+                self.clearLatestWindowBackgroundPixelBuffer()
                 DispatchQueue.main.async {
                     self.windowBackgroundStatusText = error.localizedDescription
                 }
@@ -2654,6 +2772,7 @@ extension CameraPipeline: AVCaptureVideoDataOutputSampleBufferDelegate {
 extension CameraPipeline: SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen,
+              windowBackgroundStream === stream,
               sampleBuffer.isValid,
               Self.isCompleteOrIdleScreenCaptureFrame(sampleBuffer),
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {

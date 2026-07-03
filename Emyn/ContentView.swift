@@ -42,10 +42,13 @@ private enum ControlTab: String, CaseIterable, Identifiable {
 struct ContentView: View {
     private static let windowCornerRadius: CGFloat = 30
     private static let windowPadding: CGFloat = 24
+    private static let minimumWindowWidth: CGFloat = 1080
     private static let verticalSpacing: CGFloat = 16
     private static let tabBarHeight: CGFloat = 58
     private static let controlsPanelHeight: CGFloat = 220
     private static let previewMinimumHeight: CGFloat = 180
+    private static let notesSidebarWidth: CGFloat = 360
+    private static let notesMinimumWindowWidth = minimumWindowWidth + notesSidebarWidth + windowPadding
     private static let softwareCursorBaseSize: CGFloat = 32
     private static let softwareCursorDefaultScale: CGFloat = 2
     private static let softwareCursorHotspot = CGPoint(x: 2, y: 2)
@@ -64,12 +67,15 @@ struct ContentView: View {
     @StateObject private var functionKeys = FunctionKeyController()
     @State private var selectedTab: ControlTab = .camera
     @State private var isPreviewCompact = false
+    @State private var isPresentationNotesSidebarVisible = false
     @State private var isWindowBackgroundPickerPresented = false
     @State private var isFunctionKeyConfigurationPresented = false
     @State private var previewNSView: SampleBufferPreviewView?
     @State private var cursorScale = Self.softwareCursorDefaultScale
     @State private var cursorAttentionTask: Task<Void, Never>?
     @AppStorage("excludeFunctionKeysDuringWindowControl") private var excludeFunctionKeysDuringWindowControl = true
+    @AppStorage("presentationNotesText.v1") private var presentationNotesText = ""
+    @AppStorage("presentationNotesFontSize.v1") private var presentationNotesFontSize = 18.0
 
     init(pipeline: CameraPipeline = CameraPipeline()) {
         self.pipeline = pipeline
@@ -77,22 +83,30 @@ struct ContentView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ScrollView(.vertical) {
-                VStack(spacing: Self.verticalSpacing) {
-                    previewPanel
-                        .frame(height: previewHeight(for: proxy.size))
+            let sidebarOuterWidth = isPresentationNotesSidebarVisible
+                ? Self.notesSidebarWidth + Self.windowPadding
+                : 0
+            let contentSize = CGSize(
+                width: max(0, proxy.size.width - sidebarOuterWidth),
+                height: proxy.size.height
+            )
 
-                    tabBar
-                        .frame(height: Self.tabBarHeight)
+            HStack(alignment: .top, spacing: 0) {
+                mainContent(windowSize: contentSize)
+                    .frame(width: contentSize.width)
 
-                    controlsPanel
+                if isPresentationNotesSidebarVisible {
+                    presentationNotesSidebar
+                        .frame(width: Self.notesSidebarWidth)
+                        .frame(maxHeight: .infinity)
+                        .padding(.vertical, Self.windowPadding)
+                        .padding(.trailing, Self.windowPadding)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
-                .padding(Self.windowPadding)
-                .frame(maxWidth: .infinity)
-                .frame(minHeight: proxy.size.height, alignment: .top)
             }
+            .animation(.easeInOut(duration: 0.18), value: isPresentationNotesSidebarVisible)
         }
-        .frame(minWidth: 1080, minHeight: 460)
+        .frame(minWidth: isPresentationNotesSidebarVisible ? Self.notesMinimumWindowWidth : Self.minimumWindowWidth, minHeight: 460)
         .background(windowBackground)
         .onAppear {
             pipeline.refreshCameras()
@@ -151,6 +165,23 @@ struct ContentView: View {
                     isFunctionKeyConfigurationPresented = false
                 }
             )
+        }
+    }
+
+    private func mainContent(windowSize: CGSize) -> some View {
+        ScrollView(.vertical) {
+            VStack(spacing: Self.verticalSpacing) {
+                previewPanel
+                    .frame(height: previewHeight(for: windowSize))
+
+                tabBar
+                    .frame(height: Self.tabBarHeight)
+
+                controlsPanel
+            }
+            .padding(Self.windowPadding)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: windowSize.height, alignment: .top)
         }
     }
 
@@ -597,6 +628,22 @@ struct ContentView: View {
 
             panelDivider
 
+            controlSection("Notes", systemImage: "note.text") {
+                Button {
+                    isPresentationNotesSidebarVisible.toggle()
+                } label: {
+                    Label(
+                        isPresentationNotesSidebarVisible ? "Hide Notes" : "Notes",
+                        systemImage: isPresentationNotesSidebarVisible ? "sidebar.right" : "note.text"
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+
+            panelDivider
+
             controlSection("Function Buttons", systemImage: "switch.2") {
                 functionKeyActionButtons
             }
@@ -607,6 +654,63 @@ struct ContentView: View {
             controlSection("Control Window", systemImage: "cursorarrow") {
                 windowControlControls
             }
+        }
+    }
+
+    private var presentationNotesSidebar: some View {
+        LiquidGlassSurface(cornerRadius: Self.windowCornerRadius) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    Label("Notes", systemImage: "note.text")
+                        .font(.headline)
+
+                    Spacer()
+
+                    Button {
+                        isPresentationNotesSidebarVisible = false
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Close notes")
+                }
+
+                HStack(spacing: 10) {
+                    Image(systemName: "textformat.size")
+                        .foregroundStyle(.secondary)
+
+                    Slider(value: $presentationNotesFontSize, in: 12...34, step: 1)
+
+                    Stepper(value: $presentationNotesFontSize, in: 12...34, step: 1) {
+                        Text("\(Int(presentationNotesFontSize.rounded())) pt")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 42, alignment: .trailing)
+                    }
+                    .labelsHidden()
+                }
+
+                PresentationNotesTextView(
+                    text: $presentationNotesText,
+                    fontSize: presentationNotesFontSize
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(.white.opacity(0.12), lineWidth: 1)
+                }
+
+                Button(role: .destructive) {
+                    presentationNotesText = ""
+                } label: {
+                    Label("Clear", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(presentationNotesText.isEmpty)
+            }
+            .padding(16)
+            .frame(maxHeight: .infinity)
         }
     }
 
