@@ -1268,8 +1268,6 @@ struct BackgroundRemovalSettingsView: View {
                 .font(.title3.weight(.semibold))
 
             Form {
-                Toggle("Remove Background", isOn: $pipeline.backgroundRemovalEnabled)
-
                 Picker("Quality", selection: $pipeline.quality) {
                     ForEach(SegmentationQuality.allCases) { quality in
                         Text(quality.title).tag(quality)
@@ -1289,6 +1287,15 @@ struct BackgroundRemovalSettingsView: View {
                     Text(pipeline.temporalSmoothing, format: .percent.precision(.fractionLength(0)))
                         .foregroundStyle(.secondary)
                         .frame(width: 44, alignment: .trailing)
+                }
+
+                HStack {
+                    Text("Mask Blur")
+                    Slider(value: $pipeline.maskBlurRadius, in: 0.0...4.0, step: 0.1)
+                    Text("\(pipeline.maskBlurRadius, specifier: "%.1f") px")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .frame(width: 56, alignment: .trailing)
                 }
 
                 Stepper(

@@ -119,6 +119,101 @@ enum SegmentationAnalysisResolution: String, CaseIterable, Identifiable {
     }
 }
 
+private enum BackgroundRemovalDefaults {
+    private enum Key {
+        static let quality = "backgroundRemoval.quality"
+        static let analysisResolution = "backgroundRemoval.analysisResolution"
+        static let temporalSmoothing = "backgroundRemoval.temporalSmoothing"
+        static let maskBlurRadius = "backgroundRemoval.maskBlurRadius"
+        static let maskReuseFrameCount = "backgroundRemoval.maskReuseFrameCount"
+    }
+
+    static let defaultQuality: SegmentationQuality = .accurate
+    static let defaultAnalysisResolution: SegmentationAnalysisResolution = .half
+    static let defaultTemporalSmoothing: Double = 0
+    static let defaultMaskBlurRadius: Double = 0.9
+    static let defaultMaskReuseFrameCount = 0
+
+    static func loadQuality(from defaults: UserDefaults = .standard) -> SegmentationQuality {
+        guard let rawValue = defaults.string(forKey: Key.quality),
+              let quality = SegmentationQuality(rawValue: rawValue) else {
+            return defaultQuality
+        }
+
+        return quality
+    }
+
+    static func saveQuality(_ quality: SegmentationQuality, to defaults: UserDefaults = .standard) {
+        defaults.set(quality.rawValue, forKey: Key.quality)
+    }
+
+    static func loadAnalysisResolution(from defaults: UserDefaults = .standard) -> SegmentationAnalysisResolution {
+        guard let rawValue = defaults.string(forKey: Key.analysisResolution),
+              let resolution = SegmentationAnalysisResolution(rawValue: rawValue) else {
+            return defaultAnalysisResolution
+        }
+
+        return resolution
+    }
+
+    static func saveAnalysisResolution(
+        _ resolution: SegmentationAnalysisResolution,
+        to defaults: UserDefaults = .standard
+    ) {
+        defaults.set(resolution.rawValue, forKey: Key.analysisResolution)
+    }
+
+    static func loadTemporalSmoothing(from defaults: UserDefaults = .standard) -> Double {
+        guard let value = defaults.object(forKey: Key.temporalSmoothing) as? NSNumber else {
+            return defaultTemporalSmoothing
+        }
+
+        return clampedTemporalSmoothing(value.doubleValue)
+    }
+
+    static func saveTemporalSmoothing(_ value: Double, to defaults: UserDefaults = .standard) {
+        defaults.set(clampedTemporalSmoothing(value), forKey: Key.temporalSmoothing)
+    }
+
+    static func loadMaskBlurRadius(from defaults: UserDefaults = .standard) -> Double {
+        guard let value = defaults.object(forKey: Key.maskBlurRadius) as? NSNumber else {
+            return defaultMaskBlurRadius
+        }
+
+        return clampedMaskBlurRadius(value.doubleValue)
+    }
+
+    static func saveMaskBlurRadius(_ value: Double, to defaults: UserDefaults = .standard) {
+        defaults.set(clampedMaskBlurRadius(value), forKey: Key.maskBlurRadius)
+    }
+
+    static func loadMaskReuseFrameCount(from defaults: UserDefaults = .standard) -> Int {
+        guard let value = defaults.object(forKey: Key.maskReuseFrameCount) as? NSNumber else {
+            return defaultMaskReuseFrameCount
+        }
+
+        return clampedMaskReuseFrameCount(value.intValue)
+    }
+
+    static func saveMaskReuseFrameCount(_ value: Int, to defaults: UserDefaults = .standard) {
+        defaults.set(clampedMaskReuseFrameCount(value), forKey: Key.maskReuseFrameCount)
+    }
+
+    private static func clampedTemporalSmoothing(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultTemporalSmoothing }
+        return max(0, min(0.9, value))
+    }
+
+    private static func clampedMaskBlurRadius(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultMaskBlurRadius }
+        return max(0, min(4, value))
+    }
+
+    private static func clampedMaskReuseFrameCount(_ value: Int) -> Int {
+        max(0, min(5, value))
+    }
+}
+
 enum BackgroundMediaFit: String, CaseIterable, Identifiable {
     case fill
     case contain
@@ -287,10 +382,11 @@ enum NtscPreset: String, CaseIterable, Identifiable {
 
 private struct ProcessingSettings {
     var backgroundRemovalEnabled = true
-    var quality: SegmentationQuality = .balanced
-    var analysisResolution: SegmentationAnalysisResolution = .half
-    var temporalSmoothing: Double = 0.72
-    var maskReuseFrameCount: Int = 2
+    var quality: SegmentationQuality = BackgroundRemovalDefaults.loadQuality()
+    var analysisResolution: SegmentationAnalysisResolution = BackgroundRemovalDefaults.loadAnalysisResolution()
+    var temporalSmoothing: Double = BackgroundRemovalDefaults.loadTemporalSmoothing()
+    var maskBlurRadius: Double = BackgroundRemovalDefaults.loadMaskBlurRadius()
+    var maskReuseFrameCount: Int = BackgroundRemovalDefaults.loadMaskReuseFrameCount()
     var backgroundColorEnabled = true
     var backgroundBlurEnabled = false
     var backgroundMediaEnabled = false
@@ -494,8 +590,9 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    @Published var quality: SegmentationQuality = .balanced {
+    @Published var quality: SegmentationQuality = BackgroundRemovalDefaults.loadQuality() {
         didSet {
+            BackgroundRemovalDefaults.saveQuality(quality)
             updateSettings { $0.quality = self.quality }
             segmentationQueue.async { [quality] in
                 self.segmentationRequest.qualityLevel = quality.visionQualityLevel
@@ -503,19 +600,34 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    @Published var analysisResolution: SegmentationAnalysisResolution = .half {
+    @Published var analysisResolution: SegmentationAnalysisResolution = BackgroundRemovalDefaults.loadAnalysisResolution() {
         didSet {
+            BackgroundRemovalDefaults.saveAnalysisResolution(analysisResolution)
             updateSettings { $0.analysisResolution = self.analysisResolution }
             clearMask()
         }
     }
 
-    @Published var temporalSmoothing: Double = 0.72 {
-        didSet { updateSettings { $0.temporalSmoothing = self.temporalSmoothing } }
+    @Published var temporalSmoothing: Double = BackgroundRemovalDefaults.loadTemporalSmoothing() {
+        didSet {
+            BackgroundRemovalDefaults.saveTemporalSmoothing(temporalSmoothing)
+            updateSettings { $0.temporalSmoothing = self.temporalSmoothing }
+        }
     }
 
-    @Published var maskReuseFrameCount: Int = 2 {
-        didSet { updateSettings { $0.maskReuseFrameCount = self.maskReuseFrameCount } }
+    @Published var maskBlurRadius: Double = BackgroundRemovalDefaults.loadMaskBlurRadius() {
+        didSet {
+            BackgroundRemovalDefaults.saveMaskBlurRadius(maskBlurRadius)
+            updateSettings { $0.maskBlurRadius = self.maskBlurRadius }
+            refreshCurrentRenderMask(blurRadius: maskBlurRadius, outputFrameSize: outputFrameSize)
+        }
+    }
+
+    @Published var maskReuseFrameCount: Int = BackgroundRemovalDefaults.loadMaskReuseFrameCount() {
+        didSet {
+            BackgroundRemovalDefaults.saveMaskReuseFrameCount(maskReuseFrameCount)
+            updateSettings { $0.maskReuseFrameCount = self.maskReuseFrameCount }
+        }
     }
 
     @Published var backgroundColorEnabled = true {
@@ -1256,7 +1368,8 @@ final class CameraPipeline: NSObject, ObservableObject {
             let outputSize = CGSize(width: settings.outputFrameSize.width, height: settings.outputFrameSize.height)
             guard let materializedRenderMask = materializedRenderMaskImage(
                 from: materializedMask,
-                to: CGRect(origin: .zero, size: outputSize)
+                to: CGRect(origin: .zero, size: outputSize),
+                blurRadius: settings.maskBlurRadius
             ) else {
                 return
             }
@@ -1968,14 +2081,19 @@ final class CameraPipeline: NSObject, ObservableObject {
         return image
     }
 
-    private func upscale(mask: CIImage, to extent: CGRect) -> CIImage {
+    private func upscale(mask: CIImage, to extent: CGRect, blurRadius: Double) -> CIImage {
         let normalizedMask = normalizeExtent(mask)
         let scaleX = extent.width / normalizedMask.extent.width
         let scaleY = extent.height / normalizedMask.extent.height
-
-        return normalizedMask
+        let scaledMask = normalizedMask
             .transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
-            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 0.9])
+
+        if blurRadius <= 0 {
+            return scaledMask.cropped(to: extent)
+        }
+
+        return scaledMask
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: blurRadius])
             .cropped(to: extent)
     }
 
@@ -2122,13 +2240,13 @@ final class CameraPipeline: NSObject, ObservableObject {
         return CIImage(cvPixelBuffer: pixelBuffer)
     }
 
-    private func materializedRenderMaskImage(from mask: CIImage, to extent: CGRect) -> CIImage? {
+    private func materializedRenderMaskImage(from mask: CIImage, to extent: CGRect, blurRadius: Double) -> CIImage? {
         guard let pixelBuffer = makeRenderMaskPixelBuffer(size: extent.size) else {
             return nil
         }
 
         ciContext.render(
-            upscale(mask: mask, to: extent),
+            upscale(mask: mask, to: extent, blurRadius: blurRadius),
             to: pixelBuffer,
             bounds: extent,
             colorSpace: nil
@@ -2257,6 +2375,27 @@ final class CameraPipeline: NSObject, ObservableObject {
         latestMask = mask
         latestRenderMask = renderMask
         maskLock.unlock()
+    }
+
+    private func refreshCurrentRenderMask(blurRadius: Double, outputFrameSize: OutputFrameSize) {
+        segmentationQueue.async {
+            guard let mask = self.currentMask() else { return }
+
+            let outputSize = CGSize(width: outputFrameSize.width, height: outputFrameSize.height)
+            guard let renderMask = self.materializedRenderMaskImage(
+                from: mask,
+                to: CGRect(origin: .zero, size: outputSize),
+                blurRadius: blurRadius
+            ) else {
+                return
+            }
+
+            self.maskLock.lock()
+            if self.latestMask === mask {
+                self.latestRenderMask = renderMask
+            }
+            self.maskLock.unlock()
+        }
     }
 
     private func clearMask() {
