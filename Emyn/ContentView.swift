@@ -70,6 +70,7 @@ struct ContentView: View {
     @StateObject private var windowControl = WindowControlCoordinator()
     @StateObject private var functionKeys = FunctionKeyController()
     @ObservedObject private var speechToText: SpeechToTextConfiguration
+    @ObservedObject private var speechTranscriber: SpeechToTextTranscriber
     @State private var selectedTab: ControlTab = .camera
     @State private var isSpeechTestSentenceVisible = false
     @State private var isPreviewCompact = false
@@ -85,10 +86,12 @@ struct ContentView: View {
 
     init(
         pipeline: CameraPipeline,
-        speechToText: SpeechToTextConfiguration
+        speechToText: SpeechToTextConfiguration,
+        speechTranscriber: SpeechToTextTranscriber
     ) {
         self.pipeline = pipeline
         self.speechToText = speechToText
+        self.speechTranscriber = speechTranscriber
     }
 
     var body: some View {
@@ -121,6 +124,7 @@ struct ContentView: View {
         .onAppear {
             pipeline.refreshCameras()
             pipeline.start()
+            updateSpeechTranscription()
             refreshSpeechCaptionOverlay()
             functionKeys.onTrigger = handleFunctionKeyTrigger(_:)
             functionKeys.startMonitoring()
@@ -128,10 +132,24 @@ struct ContentView: View {
         .onDisappear {
             cursorAttentionTask?.cancel()
             functionKeys.stopMonitoring()
+            speechTranscriber.stopTranscribing(clearText: true)
             pipeline.setSpeechCaptionOverlay(text: nil, configuration: speechToText.captionRenderConfiguration)
             windowControl.deactivate()
             pipeline.stop()
             pipeline.clearWindowBackground()
+        }
+        .onChange(of: speechToText.isSpeechToTextEnabled) { _, _ in
+            updateSpeechTranscription()
+            refreshSpeechCaptionOverlay()
+        }
+        .onChange(of: speechToText.selectedModelID) { _, _ in
+            updateSpeechTranscription()
+        }
+        .onChange(of: speechToText.selectedMicrophoneID) { _, _ in
+            updateSpeechTranscription()
+        }
+        .onChange(of: speechTranscriber.transcribedText) { _, _ in
+            refreshSpeechCaptionOverlay()
         }
         .onChange(of: isSpeechTestSentenceVisible) { _, _ in
             refreshSpeechCaptionOverlay()
@@ -630,6 +648,8 @@ struct ContentView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help(isSpeechTestSentenceVisible ? "Hide test sentence" : "Show test sentence")
+
+                    statusLine(speechTranscriber.statusText)
                 }
             }
 
@@ -1303,9 +1323,23 @@ struct ContentView: View {
     }
 
     private func refreshSpeechCaptionOverlay() {
+        let liveText = speechToText.isSpeechToTextEnabled
+            ? speechTranscriber.transcribedText
+            : ""
+
         pipeline.setSpeechCaptionOverlay(
-            text: isSpeechTestSentenceVisible ? Self.speechTestSentence : nil,
+            text: isSpeechTestSentenceVisible
+                ? Self.speechTestSentence
+                : liveText.isEmpty ? nil : liveText,
             configuration: speechToText.captionRenderConfiguration
+        )
+    }
+
+    private func updateSpeechTranscription() {
+        speechTranscriber.apply(
+            model: speechToText.selectedModel,
+            microphoneID: speechToText.selectedMicrophoneID,
+            isEnabled: speechToText.isSpeechToTextEnabled
         )
     }
 
@@ -1428,6 +1462,8 @@ struct ContentView: View {
             cycleWindowBackground()
         case .toggleNtscEffect:
             pipeline.toggleNtscEffect()
+        case .toggleTranscription:
+            speechToText.isSpeechToTextEnabled.toggle()
         }
     }
 
@@ -1618,6 +1654,7 @@ struct EmynSettingsView: View {
     @ObservedObject var speechToText: SpeechToTextConfiguration
     @ObservedObject var speechModelDownloader: SpeechToTextModelDownloader
     @ObservedObject var speechMicrophoneMonitor: SpeechToTextMicrophoneMonitor
+    @ObservedObject var speechTranscriber: SpeechToTextTranscriber
 
     var body: some View {
         TabView {
@@ -1636,7 +1673,8 @@ struct EmynSettingsView: View {
 
             SpeechModelSettingsView(
                 configuration: speechToText,
-                downloader: speechModelDownloader
+                downloader: speechModelDownloader,
+                transcriber: speechTranscriber
             )
             .tabItem {
                 Label("Models", systemImage: "shippingbox")
@@ -1727,6 +1765,7 @@ private struct SpeechSoundSettingsView: View {
 private struct SpeechModelSettingsView: View {
     @ObservedObject var configuration: SpeechToTextConfiguration
     @ObservedObject var downloader: SpeechToTextModelDownloader
+    @ObservedObject var transcriber: SpeechToTextTranscriber
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -1776,11 +1815,25 @@ private struct SpeechModelSettingsView: View {
                 LabeledContent("Backend") {
                     SettingsStatusLine(text: configuration.backendStatusText)
                 }
+
+                LabeledContent("Runtime") {
+                    SettingsStatusLine(text: transcriber.modelStatusText)
+                }
             }
             .formStyle(.grouped)
         }
         .padding(24)
         .frame(width: 460)
+        .onAppear {
+            transcriber.loadModelIfAvailable(configuration.selectedModel)
+        }
+        .onChange(of: configuration.selectedModelID) { _, _ in
+            transcriber.loadModelIfAvailable(configuration.selectedModel)
+        }
+        .onChange(of: downloader.statusText) { _, _ in
+            guard downloader.isModelDownloaded(configuration.selectedModel) else { return }
+            transcriber.loadModelIfAvailable(configuration.selectedModel)
+        }
     }
 
     private func modelDownloadControls(_ model: SpeechToTextModelDescriptor) -> some View {
@@ -1889,6 +1942,7 @@ struct BackgroundRemovalSettingsView: View {
 #Preview {
     ContentView(
         pipeline: CameraPipeline(),
-        speechToText: SpeechToTextConfiguration()
+        speechToText: SpeechToTextConfiguration(),
+        speechTranscriber: SpeechToTextTranscriber()
     )
 }

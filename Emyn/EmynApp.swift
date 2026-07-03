@@ -13,12 +13,14 @@ struct EmynApp: App {
     @StateObject private var speechToText = SpeechToTextConfiguration()
     @StateObject private var speechModelDownloader = SpeechToTextModelDownloader()
     @StateObject private var speechMicrophoneMonitor = SpeechToTextMicrophoneMonitor()
+    @StateObject private var speechTranscriber = SpeechToTextTranscriber()
 
     var body: some Scene {
         WindowGroup {
             ContentView(
                 pipeline: pipeline,
-                speechToText: speechToText
+                speechToText: speechToText,
+                speechTranscriber: speechTranscriber
             )
         }
 
@@ -27,7 +29,8 @@ struct EmynApp: App {
                 pipeline: pipeline,
                 speechToText: speechToText,
                 speechModelDownloader: speechModelDownloader,
-                speechMicrophoneMonitor: speechMicrophoneMonitor
+                speechMicrophoneMonitor: speechMicrophoneMonitor,
+                speechTranscriber: speechTranscriber
             )
         }
     }
