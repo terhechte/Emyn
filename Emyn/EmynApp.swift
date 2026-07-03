@@ -10,14 +10,25 @@ import SwiftUI
 @main
 struct EmynApp: App {
     @StateObject private var pipeline = CameraPipeline()
+    @StateObject private var speechToText = SpeechToTextConfiguration()
+    @StateObject private var speechModelDownloader = SpeechToTextModelDownloader()
+    @StateObject private var speechMicrophoneMonitor = SpeechToTextMicrophoneMonitor()
 
     var body: some Scene {
         WindowGroup {
-            ContentView(pipeline: pipeline)
+            ContentView(
+                pipeline: pipeline,
+                speechToText: speechToText
+            )
         }
 
         Settings {
-            BackgroundRemovalSettingsView(pipeline: pipeline)
+            EmynSettingsView(
+                pipeline: pipeline,
+                speechToText: speechToText,
+                speechModelDownloader: speechModelDownloader,
+                speechMicrophoneMonitor: speechMicrophoneMonitor
+            )
         }
     }
 }

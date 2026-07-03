@@ -15,7 +15,6 @@ private enum ControlTab: String, CaseIterable, Identifiable {
     case appWindow
     case functionKeys
     case speechToText
-    case settings
     case present
 
     var id: String { rawValue }
@@ -27,7 +26,6 @@ private enum ControlTab: String, CaseIterable, Identifiable {
         case .appWindow: return "App Window"
         case .functionKeys: return "Function Keys"
         case .speechToText: return "Speech"
-        case .settings: return "Settings"
         case .present: return "Present"
         }
     }
@@ -39,22 +37,7 @@ private enum ControlTab: String, CaseIterable, Identifiable {
         case .appWindow: return "rectangle.on.rectangle"
         case .functionKeys: return "keyboard"
         case .speechToText: return "waveform.and.mic"
-        case .settings: return "gearshape.fill"
         case .present: return "rectangle.inset.filled.and.person.filled"
-        }
-    }
-}
-
-private enum AppSettingsPane: String, CaseIterable, Identifiable {
-    case sound
-    case models
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .sound: return "Sound"
-        case .models: return "Models"
         }
     }
 }
@@ -86,11 +69,8 @@ struct ContentView: View {
     @StateObject private var windowBackgroundPicker = WindowBackgroundPickerModel()
     @StateObject private var windowControl = WindowControlCoordinator()
     @StateObject private var functionKeys = FunctionKeyController()
-    @StateObject private var speechToText = SpeechToTextConfiguration()
-    @StateObject private var speechModelDownloader = SpeechToTextModelDownloader()
-    @StateObject private var speechMicrophoneMonitor = SpeechToTextMicrophoneMonitor()
+    @ObservedObject private var speechToText: SpeechToTextConfiguration
     @State private var selectedTab: ControlTab = .camera
-    @State private var selectedAppSettingsPane: AppSettingsPane = .sound
     @State private var isSpeechTestSentenceVisible = false
     @State private var isPreviewCompact = false
     @State private var isPresentationNotesSidebarVisible = false
@@ -103,8 +83,12 @@ struct ContentView: View {
     @AppStorage("presentationNotesText.v1") private var presentationNotesText = ""
     @AppStorage("presentationNotesFontSize.v1") private var presentationNotesFontSize = 18.0
 
-    init(pipeline: CameraPipeline = CameraPipeline()) {
+    init(
+        pipeline: CameraPipeline,
+        speechToText: SpeechToTextConfiguration
+    ) {
         self.pipeline = pipeline
+        self.speechToText = speechToText
     }
 
     var body: some View {
@@ -144,20 +128,10 @@ struct ContentView: View {
         .onDisappear {
             cursorAttentionTask?.cancel()
             functionKeys.stopMonitoring()
-            speechMicrophoneMonitor.stopMonitoring()
             pipeline.setSpeechCaptionOverlay(text: nil, configuration: speechToText.captionRenderConfiguration)
             windowControl.deactivate()
             pipeline.stop()
             pipeline.clearWindowBackground()
-        }
-        .onChange(of: selectedTab) { _, _ in
-            updateSpeechMicrophoneMonitoring()
-        }
-        .onChange(of: selectedAppSettingsPane) { _, _ in
-            updateSpeechMicrophoneMonitoring()
-        }
-        .onChange(of: speechToText.selectedMicrophoneID) { _, _ in
-            updateSpeechMicrophoneMonitoring()
         }
         .onChange(of: isSpeechTestSentenceVisible) { _, _ in
             refreshSpeechCaptionOverlay()
@@ -390,8 +364,6 @@ struct ContentView: View {
             functionKeysTab
         case .speechToText:
             speechToTextTab
-        case .settings:
-            appSettingsTab
         case .present:
             presentTab
         }
@@ -739,112 +711,6 @@ struct ContentView: View {
                 )
             }
             .frame(minWidth: 280)
-        }
-    }
-
-    private var appSettingsTab: some View {
-        HStack(alignment: .top, spacing: 22) {
-            controlSection("App Settings", systemImage: "gearshape.fill") {
-                Picker("Settings", selection: $selectedAppSettingsPane) {
-                    ForEach(AppSettingsPane.allCases) { pane in
-                        Text(pane.title).tag(pane)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .controlSize(.small)
-            }
-            .frame(width: 240)
-
-            panelDivider
-
-            appSettingsPaneContent
-        }
-    }
-
-    @ViewBuilder
-    private var appSettingsPaneContent: some View {
-        switch selectedAppSettingsPane {
-        case .sound:
-            speechSoundSourceSettings
-        case .models:
-            speechModelSettings
-        }
-    }
-
-    private var speechSoundSourceSettings: some View {
-        HStack(alignment: .top, spacing: 22) {
-            controlSection("Sound Source", systemImage: "mic") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Picker("Microphone", selection: $speechToText.selectedMicrophoneID) {
-                        Text("System Default").tag("")
-
-                        ForEach(speechMicrophoneMonitor.microphones) { microphone in
-                            Text(microphone.title).tag(microphone.id)
-                        }
-
-                        if shouldShowMissingSelectedMicrophone {
-                            Text("Unavailable Microphone").tag(speechToText.selectedMicrophoneID)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-
-                    SpeechToTextMicrophoneLevelView(
-                        level: speechMicrophoneMonitor.inputLevel,
-                        isMonitoring: speechMicrophoneMonitor.isMonitoring
-                    )
-
-                    HStack(spacing: 8) {
-                        Button {
-                            startSpeechMicrophoneMonitoring()
-                        } label: {
-                            Label("Test", systemImage: "waveform")
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button {
-                            speechMicrophoneMonitor.refreshDevices()
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .buttonStyle(.bordered)
-                        .help("Refresh microphones")
-                    }
-
-                    statusLine(speechMicrophoneMonitor.statusText)
-                }
-            }
-            .frame(minWidth: 280)
-        }
-    }
-
-    private var speechModelSettings: some View {
-        HStack(alignment: .top, spacing: 22) {
-            controlSection("Speech Model", systemImage: "shippingbox") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Picker("Model", selection: $speechToText.selectedModelID) {
-                        ForEach(SpeechToTextModelDescriptor.builtIn) { model in
-                            Text("\(model.title) (\(model.sizeTitle))")
-                                .tag(model.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-
-                    speechModelSummary(speechToText.selectedModel)
-                    speechModelDownloadControls(speechToText.selectedModel)
-
-                    if speechModelDownloader.activeModelID == speechToText.selectedModel.id {
-                        ProgressView(value: speechModelDownloader.progress)
-                            .progressViewStyle(.linear)
-                    }
-
-                    statusLine(speechModelDownloader.statusText)
-                    statusLine(speechToText.backendStatusText)
-                }
-            }
-            .frame(minWidth: 360)
         }
     }
 
@@ -1274,58 +1140,6 @@ struct ContentView: View {
         }
     }
 
-    private func speechModelSummary(_ model: SpeechToTextModelDescriptor) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            valueHeader("Size", value: model.sizeTitle)
-            statusLine(model.detail)
-
-            if let path = speechToText.localModelPathForBackend() {
-                Text(path)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
-    }
-
-    private func speechModelDownloadControls(_ model: SpeechToTextModelDescriptor) -> some View {
-        let isDownloaded = speechModelDownloader.isModelDownloaded(model)
-        let isActiveDownload = speechModelDownloader.activeModelID == model.id
-
-        return HStack(spacing: 8) {
-            Button {
-                if isActiveDownload {
-                    speechModelDownloader.cancel()
-                } else {
-                    speechModelDownloader.download(model)
-                }
-            } label: {
-                Label(
-                    isActiveDownload ? "Cancel" : isDownloaded ? "Downloaded" : "Download",
-                    systemImage: isActiveDownload ? "xmark.circle" : isDownloaded ? "checkmark.circle.fill" : "arrow.down.circle"
-                )
-            }
-            .disabled(isDownloaded && !isActiveDownload)
-
-            Button {
-                speechModelDownloader.revealDownloadedModel(model)
-            } label: {
-                Image(systemName: "folder")
-            }
-            .disabled(!isDownloaded)
-            .help("Reveal downloaded model")
-
-            Button(role: .destructive) {
-                speechModelDownloader.deleteDownloadedModel(model)
-            } label: {
-                Image(systemName: "trash")
-            }
-            .disabled(!isDownloaded || isActiveDownload)
-            .help("Delete downloaded model")
-        }
-    }
-
     @ViewBuilder
     private var windowControlControls: some View {
         if let activeWindowBackgroundOption = pipeline.activeWindowBackgroundOption {
@@ -1493,27 +1307,6 @@ struct ContentView: View {
             text: isSpeechTestSentenceVisible ? Self.speechTestSentence : nil,
             configuration: speechToText.captionRenderConfiguration
         )
-    }
-
-    private var shouldShowMissingSelectedMicrophone: Bool {
-        !speechToText.selectedMicrophoneID.isEmpty
-            && !speechMicrophoneMonitor.microphones.contains { $0.id == speechToText.selectedMicrophoneID }
-    }
-
-    private var shouldMonitorSpeechMicrophone: Bool {
-        selectedTab == .settings && selectedAppSettingsPane == .sound
-    }
-
-    private func updateSpeechMicrophoneMonitoring() {
-        if shouldMonitorSpeechMicrophone {
-            startSpeechMicrophoneMonitoring()
-        } else {
-            speechMicrophoneMonitor.stopMonitoring()
-        }
-    }
-
-    private func startSpeechMicrophoneMonitoring() {
-        speechMicrophoneMonitor.startMonitoring(deviceID: speechToText.selectedMicrophoneID)
     }
 
     private func isFunctionKeyActionDisabled(_ action: FunctionKeyAction) -> Bool {
@@ -1820,6 +1613,227 @@ private struct SpeechToTextCaptionPreview: View {
     }
 }
 
+struct EmynSettingsView: View {
+    @ObservedObject var pipeline: CameraPipeline
+    @ObservedObject var speechToText: SpeechToTextConfiguration
+    @ObservedObject var speechModelDownloader: SpeechToTextModelDownloader
+    @ObservedObject var speechMicrophoneMonitor: SpeechToTextMicrophoneMonitor
+
+    var body: some View {
+        TabView {
+            BackgroundRemovalSettingsView(pipeline: pipeline)
+                .tabItem {
+                    Label("Background", systemImage: "person.crop.rectangle")
+                }
+
+            SpeechSoundSettingsView(
+                configuration: speechToText,
+                microphoneMonitor: speechMicrophoneMonitor
+            )
+            .tabItem {
+                Label("Sound", systemImage: "mic")
+            }
+
+            SpeechModelSettingsView(
+                configuration: speechToText,
+                downloader: speechModelDownloader
+            )
+            .tabItem {
+                Label("Models", systemImage: "shippingbox")
+            }
+        }
+        .frame(width: 520, height: 460)
+    }
+}
+
+private struct SpeechSoundSettingsView: View {
+    @ObservedObject var configuration: SpeechToTextConfiguration
+    @ObservedObject var microphoneMonitor: SpeechToTextMicrophoneMonitor
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("Sound Source", systemImage: "mic")
+                .font(.title3.weight(.semibold))
+
+            Form {
+                Picker("Microphone", selection: $configuration.selectedMicrophoneID) {
+                    Text("System Default").tag("")
+
+                    ForEach(microphoneMonitor.microphones) { microphone in
+                        Text(microphone.title).tag(microphone.id)
+                    }
+
+                    if shouldShowMissingSelectedMicrophone {
+                        Text("Unavailable Microphone").tag(configuration.selectedMicrophoneID)
+                    }
+                }
+
+                HStack {
+                    Text("Input")
+                    Spacer()
+                    SpeechToTextMicrophoneLevelView(
+                        level: microphoneMonitor.inputLevel,
+                        isMonitoring: microphoneMonitor.isMonitoring
+                    )
+                }
+
+                HStack {
+                    Text("Monitor")
+                    Spacer()
+                    Button {
+                        startMonitoring()
+                    } label: {
+                        Label("Test", systemImage: "waveform")
+                    }
+
+                    Button {
+                        microphoneMonitor.refreshDevices()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .help("Refresh microphones")
+                }
+
+                LabeledContent("Status") {
+                    SettingsStatusLine(text: microphoneMonitor.statusText)
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .padding(24)
+        .frame(width: 460)
+        .onAppear {
+            microphoneMonitor.refreshDevices()
+            startMonitoring()
+        }
+        .onDisappear {
+            microphoneMonitor.stopMonitoring()
+        }
+        .onChange(of: configuration.selectedMicrophoneID) { _, _ in
+            startMonitoring()
+        }
+    }
+
+    private var shouldShowMissingSelectedMicrophone: Bool {
+        !configuration.selectedMicrophoneID.isEmpty
+            && !microphoneMonitor.microphones.contains { $0.id == configuration.selectedMicrophoneID }
+    }
+
+    private func startMonitoring() {
+        microphoneMonitor.startMonitoring(deviceID: configuration.selectedMicrophoneID)
+    }
+}
+
+private struct SpeechModelSettingsView: View {
+    @ObservedObject var configuration: SpeechToTextConfiguration
+    @ObservedObject var downloader: SpeechToTextModelDownloader
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("Speech Model", systemImage: "shippingbox")
+                .font(.title3.weight(.semibold))
+
+            Form {
+                Picker("Model", selection: $configuration.selectedModelID) {
+                    ForEach(SpeechToTextModelDescriptor.builtIn) { model in
+                        Text("\(model.title) (\(model.sizeTitle))")
+                            .tag(model.id)
+                    }
+                }
+
+                LabeledContent("Size") {
+                    Text(configuration.selectedModel.sizeTitle)
+                        .foregroundStyle(.secondary)
+                }
+
+                LabeledContent("Details") {
+                    SettingsStatusLine(text: configuration.selectedModel.detail)
+                }
+
+                if let path = configuration.localModelPathForBackend() {
+                    LabeledContent("Local File") {
+                        Text(path)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+
+                LabeledContent("Download") {
+                    modelDownloadControls(configuration.selectedModel)
+                }
+
+                if downloader.activeModelID == configuration.selectedModel.id {
+                    ProgressView(value: downloader.progress)
+                        .progressViewStyle(.linear)
+                }
+
+                LabeledContent("Status") {
+                    SettingsStatusLine(text: downloader.statusText)
+                }
+
+                LabeledContent("Backend") {
+                    SettingsStatusLine(text: configuration.backendStatusText)
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .padding(24)
+        .frame(width: 460)
+    }
+
+    private func modelDownloadControls(_ model: SpeechToTextModelDescriptor) -> some View {
+        let isDownloaded = downloader.isModelDownloaded(model)
+        let isActiveDownload = downloader.activeModelID == model.id
+
+        return HStack(spacing: 8) {
+            Button {
+                if isActiveDownload {
+                    downloader.cancel()
+                } else {
+                    downloader.download(model)
+                }
+            } label: {
+                Label(
+                    isActiveDownload ? "Cancel" : isDownloaded ? "Downloaded" : "Download",
+                    systemImage: isActiveDownload ? "xmark.circle" : isDownloaded ? "checkmark.circle.fill" : "arrow.down.circle"
+                )
+            }
+            .disabled(isDownloaded && !isActiveDownload)
+
+            Button {
+                downloader.revealDownloadedModel(model)
+            } label: {
+                Image(systemName: "folder")
+            }
+            .disabled(!isDownloaded)
+            .help("Reveal downloaded model")
+
+            Button(role: .destructive) {
+                downloader.deleteDownloadedModel(model)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .disabled(!isDownloaded || isActiveDownload)
+            .help("Delete downloaded model")
+        }
+    }
+}
+
+private struct SettingsStatusLine: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.trailing)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 struct BackgroundRemovalSettingsView: View {
     @ObservedObject var pipeline: CameraPipeline
 
@@ -1873,5 +1887,8 @@ struct BackgroundRemovalSettingsView: View {
 }
 
 #Preview {
-    ContentView()
+    ContentView(
+        pipeline: CameraPipeline(),
+        speechToText: SpeechToTextConfiguration()
+    )
 }
