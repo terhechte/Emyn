@@ -49,6 +49,22 @@ fix_static_library_modulemap() {
   perl -0pi -e "s/\\Aframework module \\Q$FFI_MODULE_NAME\\E /module $FFI_MODULE_NAME /" "$modulemap"
 }
 
+append_custom_c_abi_header() {
+  local header="$1/platform_macosFFI.h"
+  if [[ ! -f "$header" ]]; then
+    echo "Missing generated header: $header" >&2
+    exit 1
+  fi
+
+  cat >>"$header" <<'HEADER'
+
+#ifndef PLATFORM_MACOS_CUSTOM_NTSC_FFI
+#define PLATFORM_MACOS_CUSTOM_NTSC_FFI
+int32_t platform_macos_apply_ntsc_effect_bgrx_in_place(uint32_t width, uint32_t height, uint64_t frame_num, uint32_t preset, uint8_t *_Nonnull pixels, uint64_t pixel_len);
+#endif
+HEADER
+}
+
 MACOS_LIBS=()
 for macos_target in "${MACOS_TARGETS[@]}"; do
   echo "Installing Rust target: $macos_target"
@@ -75,6 +91,7 @@ run_cargo run -p "$CRATE_PACKAGE" --features uniffi-bindgen --bin uniffi-bindgen
   "$MACOS_LIB" "$HEADERS_DIR" --xcframework --modulemap \
   --module-name "$FFI_MODULE_NAME" --modulemap-filename module.modulemap
 fix_static_library_modulemap "$HEADERS_DIR"
+append_custom_c_abi_header "$HEADERS_DIR"
 
 echo "Creating Swift package layout"
 mkdir -p "$PACKAGE_DIR/Sources/$KIT_MODULE_NAME"

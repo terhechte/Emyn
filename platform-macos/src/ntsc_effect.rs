@@ -15,6 +15,16 @@ pub enum NtscEffectPreset {
     Hard,
 }
 
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NtscEffectInPlaceStatus {
+    Ok = 0,
+    NullBuffer = 1,
+    InvalidDimensions = 2,
+    InvalidBufferLength = 3,
+    InvalidPreset = 4,
+}
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum NtscEffectError {
     #[error("Invalid NTSC frame dimensions: {width}x{height}")]
@@ -58,6 +68,63 @@ pub fn apply_ntsc_effect_bgrx(
     );
 
     Ok(pixels)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn platform_macos_apply_ntsc_effect_bgrx_in_place(
+    width: u32,
+    height: u32,
+    frame_num: u64,
+    preset: u32,
+    pixels: *mut u8,
+    pixel_len: u64,
+) -> i32 {
+    apply_ntsc_effect_bgrx_in_place(width, height, frame_num, preset, pixels, pixel_len) as i32
+}
+
+unsafe fn apply_ntsc_effect_bgrx_in_place(
+    width: u32,
+    height: u32,
+    frame_num: u64,
+    preset: u32,
+    pixels: *mut u8,
+    pixel_len: u64,
+) -> NtscEffectInPlaceStatus {
+    if width == 0 || height == 0 {
+        return NtscEffectInPlaceStatus::InvalidDimensions;
+    }
+
+    if pixels.is_null() {
+        return NtscEffectInPlaceStatus::NullBuffer;
+    }
+
+    let expected = u64::from(width) * u64::from(height) * 4;
+    if pixel_len != expected {
+        return NtscEffectInPlaceStatus::InvalidBufferLength;
+    }
+
+    let Some(preset) = preset_from_ffi(preset) else {
+        return NtscEffectInPlaceStatus::InvalidPreset;
+    };
+
+    let pixels = std::slice::from_raw_parts_mut(pixels, expected as usize);
+    effect_for_preset(preset).apply_effect_to_buffer::<Bgrx, u8>(
+        (width as usize, height as usize),
+        pixels,
+        frame_num as usize,
+        [1.0, 1.0],
+    );
+
+    NtscEffectInPlaceStatus::Ok
+}
+
+fn preset_from_ffi(preset: u32) -> Option<NtscEffectPreset> {
+    match preset {
+        0 => Some(NtscEffectPreset::Low),
+        1 => Some(NtscEffectPreset::Medium),
+        2 => Some(NtscEffectPreset::Hard),
+        _ => None,
+    }
 }
 
 fn effect_for_preset(preset: NtscEffectPreset) -> NtscEffect {
@@ -128,6 +195,49 @@ fn medium_effect() -> NtscEffect {
         }),
     });
     effect
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn in_place_rejects_invalid_dimensions() {
+        let mut pixels = [0_u8; 4];
+        let status = unsafe {
+            apply_ntsc_effect_bgrx_in_place(0, 1, 0, 0, pixels.as_mut_ptr(), pixels.len() as u64)
+        };
+
+        assert_eq!(status, NtscEffectInPlaceStatus::InvalidDimensions);
+    }
+
+    #[test]
+    fn in_place_rejects_null_buffer() {
+        let status =
+            unsafe { apply_ntsc_effect_bgrx_in_place(1, 1, 0, 0, std::ptr::null_mut(), 4) };
+
+        assert_eq!(status, NtscEffectInPlaceStatus::NullBuffer);
+    }
+
+    #[test]
+    fn in_place_rejects_invalid_buffer_length() {
+        let mut pixels = [0_u8; 3];
+        let status = unsafe {
+            apply_ntsc_effect_bgrx_in_place(1, 1, 0, 0, pixels.as_mut_ptr(), pixels.len() as u64)
+        };
+
+        assert_eq!(status, NtscEffectInPlaceStatus::InvalidBufferLength);
+    }
+
+    #[test]
+    fn in_place_rejects_invalid_preset() {
+        let mut pixels = [0_u8; 4];
+        let status = unsafe {
+            apply_ntsc_effect_bgrx_in_place(1, 1, 0, 99, pixels.as_mut_ptr(), pixels.len() as u64)
+        };
+
+        assert_eq!(status, NtscEffectInPlaceStatus::InvalidPreset);
+    }
 }
 
 fn hard_effect() -> NtscEffect {

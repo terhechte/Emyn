@@ -417,6 +417,11 @@ private struct ResolvedPresentationEffects {
     var confettiBursts: [ConfettiBurst]
 }
 
+private struct RenderFrame {
+    let pixelBuffer: CVPixelBuffer
+    let timestamp: CMTime
+}
+
 final class CameraPipeline: NSObject, ObservableObject {
     @Published private(set) var cameras: [CameraDeviceInfo] = []
     @Published var selectedCameraID: String = "" {
@@ -557,11 +562,11 @@ final class CameraPipeline: NSObject, ObservableObject {
     private let settingsQueue = DispatchQueue(label: "com.stylemac.Emyn.settings")
     private let screenCaptureQueue = DispatchQueue(label: "com.stylemac.Emyn.screen-capture", qos: .userInitiated)
     private let maskLock = NSLock()
-    private let renderLock = NSLock()
     private let segmentationStateLock = NSLock()
     private let backgroundLock = NSLock()
     private let backgroundMediaLock = NSLock()
     private let imageOverlayLock = NSLock()
+    private let renderGate = LatestFrameRenderGate<RenderFrame>()
 
     private let ciContext: CIContext
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
@@ -581,15 +586,21 @@ final class CameraPipeline: NSObject, ObservableObject {
 
     private var settings = ProcessingSettings()
     private var latestMask: CIImage?
+    private var latestRenderMask: CIImage?
     private var outputPixelBufferPool: CVPixelBufferPool?
     private var analysisPixelBufferPool: CVPixelBufferPool?
     private var analysisPixelBufferPoolSize = CGSize(width: 0, height: 0)
     private var maskPixelBufferPool: CVPixelBufferPool?
     private var maskPixelBufferPoolSize = CGSize(width: 0, height: 0)
+    private var renderMaskPixelBufferPool: CVPixelBufferPool?
+    private var renderMaskPixelBufferPoolSize = CGSize(width: 0, height: 0)
+    private var ntscPixelBufferPool: CVPixelBufferPool?
+    private var ntscPixelBufferPoolSize = CGSize(width: 0, height: 0)
+    private var confettiOverlayPixelBufferPool: CVPixelBufferPool?
+    private var confettiOverlayPixelBufferPoolSize = CGSize(width: 0, height: 0)
     private var outputFormatDescription: CMFormatDescription?
     private var frameCounter: UInt64 = 0
     private var segmentationInFlight = false
-    private var renderInFlight = false
     private var renderedFrameCounter = 0
     private var ntscEffectFrameCounter: UInt64 = 0
     private var didReportNtscEffectError = false
@@ -1125,33 +1136,45 @@ final class CameraPipeline: NSObject, ObservableObject {
                 return
             }
 
-            setCurrentMask(materializedMask)
+            let outputSize = CGSize(
+                width: SharedFrameConfiguration.width,
+                height: SharedFrameConfiguration.height
+            )
+            guard let materializedRenderMask = materializedRenderMaskImage(
+                from: materializedMask,
+                to: CGRect(origin: .zero, size: outputSize)
+            ) else {
+                return
+            }
+
+            setCurrentMasks(mask: materializedMask, renderMask: materializedRenderMask)
         } catch {
             setStatus(error.localizedDescription)
         }
     }
 
     private func scheduleRender(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
-        renderLock.lock()
-        guard !renderInFlight else {
-            renderLock.unlock()
+        let frame = RenderFrame(pixelBuffer: pixelBuffer, timestamp: timestamp)
+        guard let acceptedFrame = renderGate.begin(with: frame) else {
             return
         }
-        renderInFlight = true
-        renderLock.unlock()
 
+        enqueueRender(acceptedFrame)
+    }
+
+    private func enqueueRender(_ frame: RenderFrame) {
         renderQueue.async {
             autoreleasepool {
-                self.render(pixelBuffer: pixelBuffer, timestamp: timestamp)
+                self.render(pixelBuffer: frame.pixelBuffer, timestamp: frame.timestamp)
             }
             self.finishRender()
         }
     }
 
     private func finishRender() {
-        renderLock.lock()
-        renderInFlight = false
-        renderLock.unlock()
+        if let pendingFrame = renderGate.finish() {
+            enqueueRender(pendingFrame)
+        }
     }
 
     private func render(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
@@ -1170,8 +1193,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         let effects = settings.presentationEffects.resolved(at: renderTime)
 
         var renderedImage: CIImage
-        if settings.backgroundRemovalEnabled, let mask = currentMask() {
-            let upscaledMask = upscale(mask: mask, to: outputExtent)
+        if settings.backgroundRemovalEnabled, let mask = currentRenderMask() {
             let background = backgroundImage(
                 settings: settings,
                 effects: effects,
@@ -1181,7 +1203,7 @@ final class CameraPipeline: NSObject, ObservableObject {
 
             renderedImage = composePerson(
                 foreground: foreground,
-                mask: upscaledMask,
+                mask: mask,
                 background: background,
                 outputExtent: outputExtent,
                 scale: effects.personScale
@@ -1306,20 +1328,22 @@ final class CameraPipeline: NSObject, ObservableObject {
 
         if settings.backgroundBlurEnabled {
             let radius = max(0, settings.backgroundBlurRadius)
-            background = foreground
-                .clampedToExtent()
-                .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
-                .cropped(to: outputExtent)
+            background = downsampledBlurredImage(
+                foreground,
+                radius: radius,
+                outputExtent: outputExtent
+            )
         }
 
         if settings.backgroundMediaEnabled,
            var mediaImage = currentBackgroundMediaImage() {
             let radius = max(0, settings.backgroundMediaBlurRadius)
             if radius > 0 {
-                mediaImage = mediaImage
-                    .clampedToExtent()
-                    .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
-                    .cropped(to: mediaImage.extent)
+                mediaImage = downsampledBlurredImage(
+                    mediaImage,
+                    radius: radius,
+                    outputExtent: mediaImage.extent
+                )
             }
 
             background = fittedMediaBackgroundImage(
@@ -1346,6 +1370,27 @@ final class CameraPipeline: NSObject, ObservableObject {
             alpha: color.alpha
         ))
         .cropped(to: outputExtent)
+    }
+
+    private func downsampledBlurredImage(
+        _ image: CIImage,
+        radius: Double,
+        outputExtent: CGRect
+    ) -> CIImage {
+        guard radius > 0 else {
+            return image.cropped(to: outputExtent)
+        }
+
+        let downsampleScale: CGFloat = radius >= 8 ? 0.25 : 0.5
+        let downsampled = image
+            .clampedToExtent()
+            .transformed(by: CGAffineTransform(scaleX: downsampleScale, y: downsampleScale))
+        let blurred = downsampled
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius * downsampleScale])
+
+        return blurred
+            .transformed(by: CGAffineTransform(scaleX: 1 / downsampleScale, y: 1 / downsampleScale))
+            .cropped(to: outputExtent)
     }
 
     private func fittedMediaBackgroundImage(
@@ -1522,31 +1567,72 @@ final class CameraPipeline: NSObject, ObservableObject {
         outputExtent: CGRect,
         at time: CFTimeInterval
     ) -> CIImage {
-        guard !bursts.isEmpty else {
+        guard !bursts.isEmpty,
+              let overlay = renderConfettiOverlay(bursts, outputExtent: outputExtent, at: time) else {
             return image.cropped(to: outputExtent)
         }
 
-        return bursts.reduce(image.cropped(to: outputExtent)) { currentImage, burst in
+        return overlay
+            .composited(over: image.cropped(to: outputExtent))
+            .cropped(to: outputExtent)
+    }
+
+    private func renderConfettiOverlay(
+        _ bursts: [ConfettiBurst],
+        outputExtent: CGRect,
+        at time: CFTimeInterval
+    ) -> CIImage? {
+        guard let pixelBuffer = makeConfettiOverlayPixelBuffer(size: outputExtent.size),
+              CVPixelBufferLockBaseAddress(pixelBuffer, []) == kCVReturnSuccess else {
+            return nil
+        }
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+            return nil
+        }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue
+            | CGImageAlphaInfo.premultipliedFirst.rawValue
+        guard let context = CGContext(
+            data: baseAddress,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: bitmapInfo
+        ) else {
+            return nil
+        }
+
+        context.clear(CGRect(x: 0, y: 0, width: width, height: height))
+
+        for burst in bursts {
             guard let progress = burst.progress(at: time) else {
-                return currentImage
+                continue
             }
 
-            return applyConfettiBurst(
+            drawConfettiBurst(
                 burst,
                 progress: progress,
-                over: currentImage,
+                in: context,
                 outputExtent: outputExtent
             )
         }
+
+        return CIImage(cvPixelBuffer: pixelBuffer).cropped(to: outputExtent)
     }
 
-    private func applyConfettiBurst(
+    private func drawConfettiBurst(
         _ burst: ConfettiBurst,
         progress: CGFloat,
-        over image: CIImage,
+        in context: CGContext,
         outputExtent: CGRect
-    ) -> CIImage {
-        var renderedImage = image.cropped(to: outputExtent)
+    ) {
         let width = outputExtent.width
         let height = outputExtent.height
 
@@ -1597,24 +1683,24 @@ final class CameraPipeline: NSObject, ObservableObject {
                 Int(Self.confettiRandom(seed: burst.seed, index: index, salt: 12) * CGFloat(Self.confettiPalette.count))
                     % Self.confettiPalette.count
             ]
-            let particle = CIImage(color: CIColor(
+
+            context.saveGState()
+            context.translateBy(x: x, y: y)
+            context.rotate(by: angle)
+            context.setFillColor(
                 red: color.red,
                 green: color.green,
                 blue: color.blue,
                 alpha: alpha
-            ))
-            .cropped(to: CGRect(
+            )
+            context.fill(CGRect(
                 x: -particleWidth * 0.5,
                 y: -particleHeight * 0.5,
                 width: particleWidth,
                 height: particleHeight
             ))
-            .transformed(by: CGAffineTransform(translationX: x, y: y).rotated(by: angle))
-
-            renderedImage = particle.composited(over: renderedImage)
+            context.restoreGState()
         }
-
-        return renderedImage.cropped(to: outputExtent)
     }
 
     private static func confettiRandom(seed: UInt64, index: Int, salt: UInt64) -> CGFloat {
@@ -1664,61 +1750,90 @@ final class CameraPipeline: NSObject, ObservableObject {
         let height = CVPixelBufferGetHeight(pixelBuffer)
         guard width > 0, height > 0 else { return }
 
+        let processingSize = NtscEffectFrameSizer.processingSize(width: width, height: height)
+        guard let processingPixelBuffer = makeNtscPixelBuffer(
+            width: processingSize.width,
+            height: processingSize.height
+        ) else {
+            _ = applyNtscEffectInPlace(to: pixelBuffer, preset: preset)
+            return
+        }
+
+        let scaleX = CGFloat(processingSize.width) / CGFloat(width)
+        let scaleY = CGFloat(processingSize.height) / CGFloat(height)
+        let processingExtent = CGRect(
+            x: 0,
+            y: 0,
+            width: processingSize.width,
+            height: processingSize.height
+        )
+        let sourceImage = CIImage(cvPixelBuffer: pixelBuffer)
+            .transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+        ciContext.render(
+            sourceImage,
+            to: processingPixelBuffer,
+            bounds: processingExtent,
+            colorSpace: colorSpace
+        )
+
+        guard applyNtscEffectInPlace(to: processingPixelBuffer, preset: preset) else {
+            return
+        }
+
+        let outputExtent = CGRect(x: 0, y: 0, width: width, height: height)
+        let processedImage = CIImage(cvPixelBuffer: processingPixelBuffer)
+            .transformed(by: CGAffineTransform(scaleX: 1 / scaleX, y: 1 / scaleY))
+        ciContext.render(
+            processedImage,
+            to: pixelBuffer,
+            bounds: outputExtent,
+            colorSpace: colorSpace
+        )
+    }
+
+    private func applyNtscEffectInPlace(to pixelBuffer: CVPixelBuffer, preset: NtscPreset) -> Bool {
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else {
+            return false
+        }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        guard width > 0, height > 0 else { return false }
+
         let compactBytesPerRow = width * SharedFrameConfiguration.bytesPerPixel
         let frameByteCount = compactBytesPerRow * height
         guard CVPixelBufferLockBaseAddress(pixelBuffer, []) == kCVReturnSuccess else {
-            return
+            return false
         }
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
 
         guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
-            return
+            return false
         }
 
         let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        guard sourceBytesPerRow >= compactBytesPerRow else {
-            return
-        }
-
-        var frameData = Data(count: frameByteCount)
-        frameData.withUnsafeMutableBytes { destination in
-            guard let destinationBaseAddress = destination.baseAddress else { return }
-            for row in 0..<height {
-                memcpy(
-                    destinationBaseAddress.advanced(by: row * compactBytesPerRow),
-                    baseAddress.advanced(by: row * sourceBytesPerRow),
-                    compactBytesPerRow
-                )
-            }
+        guard sourceBytesPerRow == compactBytesPerRow else {
+            return false
         }
 
         do {
-            let processedData = try applyNtscEffectBgrx(
+            try applyNtscEffectBgrxInPlace(
                 width: UInt32(width),
                 height: UInt32(height),
                 frameNum: ntscEffectFrameCounter,
                 preset: preset.platformPreset,
-                pixels: frameData
+                pixels: baseAddress,
+                byteCount: frameByteCount
             )
             ntscEffectFrameCounter &+= 1
             didReportNtscEffectError = false
-            guard processedData.count == frameByteCount else { return }
-
-            processedData.withUnsafeBytes { source in
-                guard let sourceBaseAddress = source.baseAddress else { return }
-                for row in 0..<height {
-                    memcpy(
-                        baseAddress.advanced(by: row * sourceBytesPerRow),
-                        sourceBaseAddress.advanced(by: row * compactBytesPerRow),
-                        compactBytesPerRow
-                    )
-                }
-            }
+            return true
         } catch {
             ntscEffectFrameCounter &+= 1
-            guard !didReportNtscEffectError else { return }
+            guard !didReportNtscEffectError else { return false }
             didReportNtscEffectError = true
             setStatus("NTSC effect failed: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -1805,6 +1920,66 @@ final class CameraPipeline: NSObject, ObservableObject {
         return pixelBuffer
     }
 
+    private func makeRenderMaskPixelBuffer(size: CGSize) -> CVPixelBuffer? {
+        let width = Int(size.width.rounded())
+        let height = Int(size.height.rounded())
+        guard width > 0, height > 0 else { return nil }
+
+        let integralSize = CGSize(width: width, height: height)
+        if renderMaskPixelBufferPool == nil || renderMaskPixelBufferPoolSize != integralSize {
+            renderMaskPixelBufferPool = Self.makePixelBufferPool(
+                width: width,
+                height: height,
+                pixelFormat: kCVPixelFormatType_OneComponent8,
+                bitmapCompatible: false
+            )
+            renderMaskPixelBufferPoolSize = integralSize
+        }
+
+        guard let renderMaskPixelBufferPool else { return nil }
+        var pixelBuffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, renderMaskPixelBufferPool, &pixelBuffer)
+        return pixelBuffer
+    }
+
+    private func makeNtscPixelBuffer(width: Int, height: Int) -> CVPixelBuffer? {
+        let integralSize = CGSize(width: width, height: height)
+        if ntscPixelBufferPool == nil || ntscPixelBufferPoolSize != integralSize {
+            ntscPixelBufferPool = Self.makePixelBufferPool(
+                width: width,
+                height: height,
+                pixelFormat: SharedFrameConfiguration.pixelFormat
+            )
+            ntscPixelBufferPoolSize = integralSize
+        }
+
+        guard let ntscPixelBufferPool else { return nil }
+        var pixelBuffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, ntscPixelBufferPool, &pixelBuffer)
+        return pixelBuffer
+    }
+
+    private func makeConfettiOverlayPixelBuffer(size: CGSize) -> CVPixelBuffer? {
+        let width = Int(size.width.rounded())
+        let height = Int(size.height.rounded())
+        guard width > 0, height > 0 else { return nil }
+
+        let integralSize = CGSize(width: width, height: height)
+        if confettiOverlayPixelBufferPool == nil || confettiOverlayPixelBufferPoolSize != integralSize {
+            confettiOverlayPixelBufferPool = Self.makePixelBufferPool(
+                width: width,
+                height: height,
+                pixelFormat: SharedFrameConfiguration.pixelFormat
+            )
+            confettiOverlayPixelBufferPoolSize = integralSize
+        }
+
+        guard let confettiOverlayPixelBufferPool else { return nil }
+        var pixelBuffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, confettiOverlayPixelBufferPool, &pixelBuffer)
+        return pixelBuffer
+    }
+
     private func materializedMaskImage(from mask: CIImage) -> CIImage? {
         let normalizedMask = normalizeExtent(mask)
         let maskSize = normalizedMask.extent.size
@@ -1816,6 +1991,21 @@ final class CameraPipeline: NSObject, ObservableObject {
             normalizedMask,
             to: pixelBuffer,
             bounds: CGRect(origin: .zero, size: maskSize),
+            colorSpace: nil
+        )
+
+        return CIImage(cvPixelBuffer: pixelBuffer)
+    }
+
+    private func materializedRenderMaskImage(from mask: CIImage, to extent: CGRect) -> CIImage? {
+        guard let pixelBuffer = makeRenderMaskPixelBuffer(size: extent.size) else {
+            return nil
+        }
+
+        ciContext.render(
+            upscale(mask: mask, to: extent),
+            to: pixelBuffer,
+            bounds: extent,
             colorSpace: nil
         )
 
@@ -1884,15 +2074,23 @@ final class CameraPipeline: NSObject, ObservableObject {
         return latestMask
     }
 
-    private func setCurrentMask(_ mask: CIImage) {
+    private func currentRenderMask() -> CIImage? {
+        maskLock.lock()
+        defer { maskLock.unlock() }
+        return latestRenderMask
+    }
+
+    private func setCurrentMasks(mask: CIImage, renderMask: CIImage) {
         maskLock.lock()
         latestMask = mask
+        latestRenderMask = renderMask
         maskLock.unlock()
     }
 
     private func clearMask() {
         maskLock.lock()
         latestMask = nil
+        latestRenderMask = nil
         maskLock.unlock()
     }
 
@@ -2056,14 +2254,11 @@ final class CameraPipeline: NSObject, ObservableObject {
 
     private static func windowBackgroundCaptureSize(for frame: CGRect) -> (width: Int, height: Int) {
         let scale = backingScaleFactor(for: frame)
-        let rawWidth = max(1, frame.width * scale)
-        let rawHeight = max(1, frame.height * scale)
-        let maxDimension: CGFloat = 2560
-        let downscale = min(1, maxDimension / max(rawWidth, rawHeight))
-
-        return (
-            width: max(1, Int((rawWidth * downscale).rounded())),
-            height: max(1, Int((rawHeight * downscale).rounded()))
+        return WindowBackgroundCaptureSizer.captureSize(
+            rawWidth: frame.width * scale,
+            rawHeight: frame.height * scale,
+            maxWidth: SharedFrameConfiguration.width,
+            maxHeight: SharedFrameConfiguration.height
         )
     }
 
