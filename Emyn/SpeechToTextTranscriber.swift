@@ -6,19 +6,27 @@ import Foundation
 import CTranscribe
 #endif
 
+final class SpeechToTextInputLevel: ObservableObject {
+    @Published private(set) var value = 0.0
+
+    func update(_ level: Double) {
+        value = max(0, min(1, level))
+    }
+}
+
 final class SpeechToTextTranscriber: ObservableObject {
     @Published private(set) var transcribedText = ""
     @Published private(set) var statusText = "Speech model not loaded."
     @Published private(set) var modelStatusText = "Speech model not loaded."
     @Published private(set) var isTranscribing = false
-    @Published private(set) var inputLevel = 0.0
+    let inputLevel = SpeechToTextInputLevel()
 
     private let queue = DispatchQueue(label: "com.emyn.speech-to-text.transcriber")
     private lazy var audioCapture = SpeechToTextAudioCapture { [weak self] samples in
         self?.enqueueAudio(samples)
     } onLevel: { [weak self] level in
         DispatchQueue.main.async {
-            self?.inputLevel = level
+            self?.inputLevel.update(level)
         }
     } onStatus: { [weak self] status in
         DispatchQueue.main.async {
@@ -103,7 +111,7 @@ final class SpeechToTextTranscriber: ObservableObject {
 
         DispatchQueue.main.async {
             self.isTranscribing = false
-            self.inputLevel = 0
+            self.inputLevel.update(0)
             if clearText {
                 self.transcribedText = ""
             }
@@ -430,8 +438,10 @@ private final class SpeechToTextAudioCapture: NSObject, AVCaptureAudioDataOutput
     private let output = AVCaptureAudioDataOutput()
     private let sessionQueue = DispatchQueue(label: "com.emyn.speech-to-text.capture.session")
     private let sampleQueue = DispatchQueue(label: "com.emyn.speech-to-text.capture.samples")
+    private let levelPublishIntervalNanoseconds: UInt64 = 50_000_000
     private var activeDeviceID = ""
     private var resampler = SpeechToTextLinearResampler()
+    private var lastLevelPublication = DispatchTime(uptimeNanoseconds: 0)
 
     init(
         onSamples: @escaping ([Float]) -> Void,
@@ -508,8 +518,18 @@ private final class SpeechToTextAudioCapture: NSObject, AVCaptureAudioDataOutput
         )
         guard !samples.isEmpty else { return }
 
-        onLevel(Self.meterLevel(samples))
+        publishLevel(Self.meterLevel(samples))
         onSamples(samples)
+    }
+
+    private func publishLevel(_ level: Double) {
+        let now = DispatchTime.now()
+        guard now.uptimeNanoseconds - lastLevelPublication.uptimeNanoseconds >= levelPublishIntervalNanoseconds else {
+            return
+        }
+
+        lastLevelPublication = now
+        onLevel(level)
     }
 
     private func configureAndStart(deviceID: String) {

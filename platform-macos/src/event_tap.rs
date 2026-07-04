@@ -12,7 +12,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc, Mutex, OnceLock,
 };
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // ── FFI ───────────────────────────────────────────────────────────────────────
@@ -94,6 +94,8 @@ extern "C" {
 }
 
 extern "C" {
+    fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+
     fn clock_gettime_nsec_np(clock_id: i32) -> u64;
 }
 
@@ -104,7 +106,10 @@ extern "C" {
         port: *mut c_void,
         order: i32,
     ) -> *mut c_void;
-    fn CFRunLoopGetMain() -> *mut c_void;
+    fn CFRunLoopGetCurrent() -> *mut c_void;
+    fn CFRunLoopRun();
+    fn CFRunLoopStop(rl: *mut c_void);
+    fn CFRunLoopWakeUp(rl: *mut c_void);
     fn CFRunLoopAddSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
     fn CFRunLoopRemoveSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
     fn CFRelease(cf_type: *mut c_void);
@@ -124,6 +129,8 @@ const CG_DEFAULT_TAP: u32 = 0;
 const CG_EVENT_SOURCE_STATE_HID_SYSTEM: u32 = 1;
 // macOS clock id for uptime nanoseconds, matching mach continuous event timestamps.
 const CLOCK_UPTIME_RAW: i32 = 8;
+// qos_class_t value for QOS_CLASS_USER_INTERACTIVE.
+const QOS_CLASS_USER_INTERACTIVE: u32 = 0x21;
 
 // CGEventType raw values
 const EV_LEFT_MOUSE_DOWN: u32 = 1;
@@ -207,7 +214,7 @@ pub struct TapState {
     pub attach_keyboard_auth_message: bool,
     pub on_mouse_move: Arc<dyn Fn(f64, f64) + Send + Sync>,
     pub on_deactivate: Arc<dyn Fn() + Send + Sync>,
-    // Mutable escape-detection state; only touched from the tap callback (main run-loop thread).
+    // Mutable escape-detection state; only touched from the tap callback thread.
     pub alt_press_times: Mutex<Vec<Instant>>,
     // Shared click-group id for down/drag/up sequences routed to a background window.
     pub current_click_group: Mutex<Option<i64>>,
@@ -227,7 +234,7 @@ pub struct TapState {
     pub tap_port: Mutex<*mut c_void>,
 }
 
-// Safety: TapState is only mutated from the main run-loop thread inside the
+// Safety: TapState is only mutated from the dedicated tap run-loop thread inside the
 // tap callback. The Mutex fields add the required Sync bound for Arc.
 unsafe impl Send for TapState {}
 unsafe impl Sync for TapState {}
@@ -237,9 +244,24 @@ struct ForwardedMouseEvent {
     event: usize,
 }
 
+enum TapWorkerStart {
+    Started { run_loop: usize },
+    Failed { message: String },
+}
+
+fn configure_event_tap_thread_priority() {
+    let result = unsafe { pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0) };
+    if result != 0 {
+        debug_event_tap(format_args!(
+            "could not raise event tap thread QoS: errno={}",
+            result
+        ));
+    }
+}
+
 // ── C-level callback ──────────────────────────────────────────────────────────
 
-/// This is the CGEventTap callback. It runs on the main CFRunLoop thread.
+/// This is the CGEventTap callback. It runs on the dedicated event-tap run-loop thread.
 /// Returns null to suppress the event, or a (possibly modified) CGEventRef to pass it through.
 unsafe extern "C" fn tap_callback(
     _proxy: *mut c_void,
@@ -1158,24 +1180,40 @@ pub fn forward_keyboard_event_for_testing(
     Ok(())
 }
 
+unsafe fn cleanup_event_tap_worker(
+    state: &TapState,
+    run_loop: *mut c_void,
+    run_loop_source: *mut c_void,
+    tap_port: *mut c_void,
+) {
+    stop_tap_and_reveal_cursor(state);
+
+    if !run_loop.is_null() && !run_loop_source.is_null() {
+        let common_modes = kCFRunLoopCommonModes;
+        CFRunLoopRemoveSource(run_loop, run_loop_source, common_modes);
+    }
+    if !run_loop_source.is_null() {
+        CFRelease(run_loop_source);
+    }
+    if !tap_port.is_null() {
+        CFRelease(tap_port);
+    }
+}
+
 // ── Public session type ───────────────────────────────────────────────────────
 
 /// An active event-tap session. Dropping this stops the tap and restores the cursor.
 pub struct EventTapSession {
-    // Heap-allocated state pointer passed to the C callback. Must outlive the tap.
-    _state: Box<TapState>,
-    tap_port: *mut c_void,
-    run_loop_source: *mut c_void,
+    run_loop: usize,
+    thread: Mutex<Option<JoinHandle<()>>>,
+    stopped: AtomicBool,
 }
 
-// Safety: EventTapSession is only used from the main thread but must be
-// movable across threads (e.g. into Arc) — raw pointers inside are protected
-// by the assumption that stop() is always called from the same thread as start().
 unsafe impl Send for EventTapSession {}
 unsafe impl Sync for EventTapSession {}
 
 impl EventTapSession {
-    /// Install the event tap. Must be called from the main thread.
+    /// Install the event tap on its own run-loop thread.
     /// Returns an error if the tap could not be created (usually missing
     /// Accessibility permission).
     pub fn start(
@@ -1196,118 +1234,192 @@ impl EventTapSession {
         on_mouse_move: Arc<dyn Fn(f64, f64) + Send + Sync>,
         on_deactivate: Arc<dyn Fn() + Send + Sync>,
     ) -> anyhow::Result<Self> {
-        eprintln!(
-            "[window-control] starting event tap target_pid={} target_window_id={:?} secure_input={:?} exclude_function_keys={} attach_keyboard_auth_message={} event_mask=0x{:x}",
-            target_pid,
-            target_window_id,
-            is_secure_event_input_enabled(),
-            exclude_function_keys.load(Ordering::Relaxed),
-            attach_keyboard_auth_message,
-            event_mask()
-        );
+        let (start_sender, start_receiver) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("emyn-event-tap".to_owned())
+            .spawn(move || {
+                configure_event_tap_thread_priority();
+                eprintln!(
+                    "[window-control] starting event tap target_pid={} target_window_id={:?} secure_input={:?} exclude_function_keys={} attach_keyboard_auth_message={} event_mask=0x{:x}",
+                    target_pid,
+                    target_window_id,
+                    is_secure_event_input_enabled(),
+                    exclude_function_keys.load(Ordering::Relaxed),
+                    attach_keyboard_auth_message,
+                    event_mask()
+                );
 
-        let initial_cursor = hidden_cursor_anchor(view_x, view_y, view_w, view_h);
-        let (desktop_bounds, display_bounds) =
-            unsafe { active_display_layout(view_rect(view_x, view_y, view_w, view_h)) };
-        let mouse_forwarder = spawn_mouse_forwarder();
-        debug_event_tap(format_args!(
-            "cursor setup view=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1}) desktop=({:.1},{:.1},{:.1},{:.1}) displays={} display_bounds={} initial=({:.1},{:.1})",
-            view_x,
-            view_y,
-            view_w,
-            view_h,
-            target_x,
-            target_y,
-            target_w,
-            target_h,
-            desktop_bounds.origin.x,
-            desktop_bounds.origin.y,
-            desktop_bounds.size.width,
-            desktop_bounds.size.height,
-            display_bounds.len(),
-            format_display_bounds(&display_bounds),
-            initial_cursor.x,
-            initial_cursor.y
-        ));
-        let state = Box::new(TapState {
-            target_pid,
-            target_window_id,
-            view_x,
-            view_y,
-            view_w,
-            view_h,
-            target_x,
-            target_y,
-            target_w,
-            target_h,
-            escape_taps,
-            escape_interval_ms,
-            exclude_function_keys,
-            attach_keyboard_auth_message,
-            on_mouse_move,
-            on_deactivate,
-            alt_press_times: Mutex::new(Vec::new()),
-            current_click_group: Mutex::new(None),
-            virtual_cursor: Mutex::new(initial_cursor),
-            hidden_cursor: Mutex::new(initial_cursor),
-            desktop_bounds,
-            display_bounds,
-            mouse_forwarder,
-            cursor_hidden: AtomicBool::new(false),
-            last_cursor_debug_log: Mutex::new(None),
-            last_ignored_forwarded_event_log: Mutex::new(None),
-            tap_port: Mutex::new(std::ptr::null_mut()),
-        });
+                let initial_cursor = hidden_cursor_anchor(view_x, view_y, view_w, view_h);
+                let (desktop_bounds, display_bounds) = unsafe {
+                    active_display_layout(view_rect(view_x, view_y, view_w, view_h))
+                };
+                let mouse_forwarder = spawn_mouse_forwarder();
+                debug_event_tap(format_args!(
+                    "cursor setup view=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1}) desktop=({:.1},{:.1},{:.1},{:.1}) displays={} display_bounds={} initial=({:.1},{:.1})",
+                    view_x,
+                    view_y,
+                    view_w,
+                    view_h,
+                    target_x,
+                    target_y,
+                    target_w,
+                    target_h,
+                    desktop_bounds.origin.x,
+                    desktop_bounds.origin.y,
+                    desktop_bounds.size.width,
+                    desktop_bounds.size.height,
+                    display_bounds.len(),
+                    format_display_bounds(&display_bounds),
+                    initial_cursor.x,
+                    initial_cursor.y
+                ));
+                let state = Box::new(TapState {
+                    target_pid,
+                    target_window_id,
+                    view_x,
+                    view_y,
+                    view_w,
+                    view_h,
+                    target_x,
+                    target_y,
+                    target_w,
+                    target_h,
+                    escape_taps,
+                    escape_interval_ms,
+                    exclude_function_keys,
+                    attach_keyboard_auth_message,
+                    on_mouse_move,
+                    on_deactivate,
+                    alt_press_times: Mutex::new(Vec::new()),
+                    current_click_group: Mutex::new(None),
+                    virtual_cursor: Mutex::new(initial_cursor),
+                    hidden_cursor: Mutex::new(initial_cursor),
+                    desktop_bounds,
+                    display_bounds,
+                    mouse_forwarder,
+                    cursor_hidden: AtomicBool::new(false),
+                    last_cursor_debug_log: Mutex::new(None),
+                    last_ignored_forwarded_event_log: Mutex::new(None),
+                    tap_port: Mutex::new(std::ptr::null_mut()),
+                });
 
-        let state_ptr = &*state as *const TapState as *mut c_void;
+                let state_ptr = &*state as *const TapState as *mut c_void;
+                let tap_port = unsafe {
+                    CGEventTapCreate(
+                        CG_SESSION_EVENT_TAP,
+                        CG_HEAD_INSERT_EVENT_TAP,
+                        CG_DEFAULT_TAP,
+                        event_mask(),
+                        tap_callback as *const c_void,
+                        state_ptr,
+                    )
+                };
 
-        let tap_port = unsafe {
-            CGEventTapCreate(
-                CG_SESSION_EVENT_TAP,
-                CG_HEAD_INSERT_EVENT_TAP,
-                CG_DEFAULT_TAP,
-                event_mask(),
-                tap_callback as *const c_void,
-                state_ptr,
-            )
-        };
+                if tap_port.is_null() {
+                    let _ = start_sender.send(TapWorkerStart::Failed {
+                        message: "CGEventTapCreate failed — ensure the process has Accessibility permission \
+                                  (System Settings → Privacy & Security → Accessibility)"
+                            .to_owned(),
+                    });
+                    return;
+                }
 
-        if tap_port.is_null() {
-            anyhow::bail!(
-                "CGEventTapCreate failed — ensure the process has Accessibility permission \
-                 (System Settings → Privacy & Security → Accessibility)"
-            );
+                *state.tap_port.lock().unwrap() = tap_port;
+
+                let run_loop_source =
+                    unsafe { CFMachPortCreateRunLoopSource(std::ptr::null(), tap_port, 0) };
+                if run_loop_source.is_null() {
+                    unsafe {
+                        CFRelease(tap_port);
+                    }
+                    let _ = start_sender.send(TapWorkerStart::Failed {
+                        message: "CFMachPortCreateRunLoopSource failed for event tap".to_owned(),
+                    });
+                    return;
+                }
+
+                let run_loop = unsafe { CFRunLoopGetCurrent() };
+                if run_loop.is_null() {
+                    unsafe {
+                        CFRelease(run_loop_source);
+                        CFRelease(tap_port);
+                    }
+                    let _ = start_sender.send(TapWorkerStart::Failed {
+                        message: "CFRunLoopGetCurrent failed for event tap thread".to_owned(),
+                    });
+                    return;
+                }
+
+                unsafe {
+                    let common_modes = kCFRunLoopCommonModes;
+                    CFRunLoopAddSource(run_loop, run_loop_source, common_modes);
+                    CGEventTapEnable(tap_port, true);
+                    hide_cursor(&state);
+                    warp_hidden_cursor_to(initial_cursor);
+                }
+
+                if start_sender
+                    .send(TapWorkerStart::Started {
+                        run_loop: run_loop as usize,
+                    })
+                    .is_err()
+                {
+                    unsafe {
+                        cleanup_event_tap_worker(&state, run_loop, run_loop_source, tap_port);
+                    }
+                    return;
+                }
+
+                unsafe {
+                    CFRunLoopRun();
+                    cleanup_event_tap_worker(&state, run_loop, run_loop_source, tap_port);
+                }
+            })
+            .map_err(|err| anyhow::anyhow!("failed to spawn event tap thread: {err}"))?;
+
+        match start_receiver.recv() {
+            Ok(TapWorkerStart::Started { run_loop }) => Ok(EventTapSession {
+                run_loop,
+                thread: Mutex::new(Some(thread)),
+                stopped: AtomicBool::new(false),
+            }),
+            Ok(TapWorkerStart::Failed { message }) => {
+                let _ = thread.join();
+                anyhow::bail!(message);
+            }
+            Err(err) => {
+                let _ = thread.join();
+                anyhow::bail!("event tap thread exited before startup completed: {err}");
+            }
         }
-
-        // Store the port in TapState so the timeout-handler can re-enable it.
-        *state.tap_port.lock().unwrap() = tap_port;
-
-        let run_loop_source =
-            unsafe { CFMachPortCreateRunLoopSource(std::ptr::null(), tap_port, 0) };
-
-        unsafe {
-            let common_modes = kCFRunLoopCommonModes;
-            CFRunLoopAddSource(CFRunLoopGetMain(), run_loop_source, common_modes);
-            CGEventTapEnable(tap_port, true);
-            hide_cursor(&state);
-            warp_hidden_cursor_to(initial_cursor);
-        }
-
-        Ok(EventTapSession {
-            _state: state,
-            tap_port,
-            run_loop_source,
-        })
     }
 
     /// Disable the tap and restore the system cursor. Idempotent.
     pub fn stop(&self) {
+        if self.stopped.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
         unsafe {
-            stop_tap_and_reveal_cursor(&self._state);
-            if !self.run_loop_source.is_null() {
-                let common_modes = kCFRunLoopCommonModes;
-                CFRunLoopRemoveSource(CFRunLoopGetMain(), self.run_loop_source, common_modes);
+            let run_loop = self.run_loop as *mut c_void;
+            if !run_loop.is_null() {
+                CFRunLoopStop(run_loop);
+                CFRunLoopWakeUp(run_loop);
             }
+        }
+
+        let Ok(mut thread) = self.thread.lock() else {
+            return;
+        };
+
+        if let Some(handle) = thread.take() {
+            if handle.thread().id() == thread::current().id() {
+                debug_event_tap(format_args!(
+                    "event tap stop called from worker thread; skipping join"
+                ));
+                return;
+            }
+            let _ = handle.join();
         }
     }
 }
@@ -1315,14 +1427,6 @@ impl EventTapSession {
 impl Drop for EventTapSession {
     fn drop(&mut self) {
         self.stop();
-        unsafe {
-            if !self.run_loop_source.is_null() {
-                CFRelease(self.run_loop_source);
-            }
-            if !self.tap_port.is_null() {
-                CFRelease(self.tap_port);
-            }
-        }
     }
 }
 
