@@ -6,8 +6,11 @@
 //
 
 import AppKit
+import AVFoundation
 import SwiftUI
 import UniformTypeIdentifiers
+
+private let selectedSettingsTabStorageKey = "settings.selectedTab.v1"
 
 private enum ControlTab: String, CaseIterable, Identifiable {
     case camera
@@ -25,7 +28,7 @@ private enum ControlTab: String, CaseIterable, Identifiable {
         case .background: return "Background"
         case .appWindow: return "App Window"
         case .functionKeys: return "Function Keys"
-        case .speechToText: return "Text"
+        case .speechToText: return "Transcribe"
         case .present: return "Present"
         }
     }
@@ -40,6 +43,12 @@ private enum ControlTab: String, CaseIterable, Identifiable {
         case .present: return "rectangle.inset.filled.and.person.filled"
         }
     }
+}
+
+private enum SettingsTab: String {
+    case background
+    case sound
+    case models
 }
 
 struct ContentView: View {
@@ -248,6 +257,46 @@ struct ContentView: View {
         min(
             max(width, Self.notesSidebarMinimumWidth),
             max(Self.notesSidebarMinimumWidth, maximumWidth)
+        )
+    }
+
+    private var speechMicrophoneStatusTitle: String {
+        "Listening on \(selectedSpeechMicrophoneTitle)"
+    }
+
+    private var selectedSpeechMicrophoneTitle: String {
+        if let selectedDevice = selectedSpeechMicrophoneDevice {
+            return selectedDevice.localizedName
+        }
+
+        return speechToText.selectedMicrophoneID.isEmpty ? "System Default Microphone" : "Selected Microphone"
+    }
+
+    private var selectedSpeechMicrophoneDevice: AVCaptureDevice? {
+        if speechToText.selectedMicrophoneID.isEmpty {
+            return AVCaptureDevice.default(for: .audio)
+        }
+
+        let session = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone],
+            mediaType: .audio,
+            position: .unspecified
+        )
+
+        return session.devices.first { $0.uniqueID == speechToText.selectedMicrophoneID }
+    }
+
+    private func settingsTabLink<Label: View>(
+        tab: SettingsTab,
+        @ViewBuilder label: @escaping () -> Label
+    ) -> some View {
+        SettingsLink {
+            label()
+        }
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                UserDefaults.standard.set(tab.rawValue, forKey: selectedSettingsTabStorageKey)
+            }
         )
     }
 
@@ -686,7 +735,7 @@ struct ContentView: View {
 
             panelDivider
 
-            controlSection("Buttons", systemImage: "switch.2") {
+            controlSection("Test Functions", systemImage: "switch.2") {
                 functionKeyActionButtons
             }
         }
@@ -710,7 +759,27 @@ struct ContentView: View {
                     .controlSize(.small)
                     .help(isSpeechTestSentenceVisible ? "Hide test sentence" : "Show test sentence")
 
-                    statusLine(speechTranscriber.statusText)
+                    settingsTabLink(tab: .sound) {
+                        Text(speechMicrophoneStatusTitle)
+                            .font(.caption)
+                            .underline()
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    .help("Open sound preferences")
+
+                    HStack(spacing: 8) {
+                        Text("Model: \(speechToText.selectedModel.title)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+
+                        settingsTabLink(tab: .models) {
+                            Text("Change")
+                        }
+                        .controlSize(.small)
+                    }
                 }
             }
 
@@ -840,7 +909,7 @@ struct ContentView: View {
 
             panelDivider
 
-            controlSection("Function Buttons", systemImage: "switch.2") {
+            controlSection("Test Functions", systemImage: "switch.2") {
                 functionKeyActionButtons
             }
             .frame(minWidth: 300)
@@ -897,13 +966,22 @@ struct ContentView: View {
                         .stroke(.white.opacity(0.12), lineWidth: 1)
                 }
 
-                Button(role: .destructive) {
-                    presentationNotesText = ""
-                } label: {
-                    Label("Clear", systemImage: "trash")
-                        .frame(maxWidth: .infinity)
+                HStack(spacing: 8) {
+                    Button {
+                        openPresentationNotesMarkdownFile()
+                    } label: {
+                        Label("Open", systemImage: "doc.text")
+                            .frame(maxWidth: .infinity)
+                    }
+
+                    Button(role: .destructive) {
+                        presentationNotesText = ""
+                    } label: {
+                        Label("Clear", systemImage: "trash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(presentationNotesText.isEmpty)
                 }
-                .disabled(presentationNotesText.isEmpty)
             }
             .padding(16)
             .frame(maxHeight: .infinity)
@@ -1581,6 +1659,33 @@ struct ContentView: View {
         }
     }
 
+    private func openPresentationNotesMarkdownFile() {
+        let panel = NSOpenPanel()
+        var markdownTypes: [UTType] = []
+        if let mdType = UTType(filenameExtension: "md") {
+            markdownTypes.append(mdType)
+        }
+        if let markdownType = UTType(filenameExtension: "markdown") {
+            markdownTypes.append(markdownType)
+        }
+        panel.allowedContentTypes = markdownTypes.isEmpty ? [.plainText] : markdownTypes
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.prompt = "Open"
+        panel.message = "Choose a Markdown file to load into the presentation notes."
+
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+
+            do {
+                presentationNotesText = try String(contentsOf: url, encoding: .utf8)
+            } catch {
+                NSSound.beep()
+            }
+        }
+    }
+
     private func handleFunctionKeyTrigger(_ trigger: FunctionKeyTrigger) {
         performFunctionKeyAction(
             trigger.slot.action,
@@ -1818,13 +1923,15 @@ struct EmynSettingsView: View {
     @ObservedObject var speechModelDownloader: SpeechToTextModelDownloader
     @ObservedObject var speechMicrophoneMonitor: SpeechToTextMicrophoneMonitor
     @ObservedObject var speechTranscriber: SpeechToTextTranscriber
+    @AppStorage(selectedSettingsTabStorageKey) private var selectedTab: SettingsTab = .background
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             BackgroundRemovalSettingsView(pipeline: pipeline)
                 .tabItem {
                     Label("Background", systemImage: "person.crop.rectangle")
                 }
+                .tag(SettingsTab.background)
 
             SpeechSoundSettingsView(
                 configuration: speechToText,
@@ -1833,6 +1940,7 @@ struct EmynSettingsView: View {
             .tabItem {
                 Label("Sound", systemImage: "mic")
             }
+            .tag(SettingsTab.sound)
 
             SpeechModelSettingsView(
                 configuration: speechToText,
@@ -1842,6 +1950,7 @@ struct EmynSettingsView: View {
             .tabItem {
                 Label("Models", systemImage: "shippingbox")
             }
+            .tag(SettingsTab.models)
         }
         .frame(width: 520, height: 460)
     }

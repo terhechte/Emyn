@@ -83,11 +83,11 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .none: return "None"
         case .toggleWindowBackground: return "Window"
-        case .togglePersonPosition: return "Person"
+        case .togglePersonPosition: return "Smaller Person"
         case .toggleWindowAndPerson: return "Window + Person"
         case .toggleImageOverlay: return "Image"
         case .toggleWindowZoom: return "Zoom"
-        case .drawAttentionToCursor: return "Cursor"
+        case .drawAttentionToCursor: return "Cursor Attention"
         case .triggerConfetti: return "Confetti"
         case .cycleWindowBackground: return "Next Window"
         case .toggleNtscEffect: return "NTSC"
