@@ -52,8 +52,9 @@ struct ContentView: View {
     private static let controlsPanelHorizontalPadding: CGFloat = 22
     private static let controlsPanelVerticalPadding: CGFloat = 18
     private static let previewMinimumHeight: CGFloat = 180
-    private static let notesSidebarWidth: CGFloat = 360
-    private static let notesMinimumWindowWidth = minimumWindowWidth + notesSidebarWidth + windowPadding
+    private static let notesSidebarDefaultWidth: CGFloat = 360
+    private static let notesSidebarMinimumWidth: CGFloat = 300
+    private static let notesSidebarMaximumWidth: CGFloat = 640
     private static let softwareCursorBaseSize: CGFloat = 32
     private static let softwareCursorDefaultScale = 2.0
     private static let softwareCursorMinimumScale = softwareCursorDefaultScale / 8
@@ -85,10 +86,12 @@ struct ContentView: View {
     @State private var cursorAttentionTask: Task<Void, Never>?
     @State private var isSoftwareCursorPreviewVisible = false
     @State private var cursorPreviewTask: Task<Void, Never>?
+    @State private var notesSidebarDragStartWidth: CGFloat?
     @AppStorage("excludeFunctionKeysDuringWindowControl") private var excludeFunctionKeysDuringWindowControl = true
     @AppStorage("softwareCursorScale.v1") private var softwareCursorScale = Self.softwareCursorDefaultScale
     @AppStorage("presentationNotesText.v1") private var presentationNotesText = ""
     @AppStorage("presentationNotesFontSize.v1") private var presentationNotesFontSize = 18.0
+    @AppStorage("presentationNotesSidebarWidth.v1") private var presentationNotesSidebarWidth = 360.0
 
     init(
         pipeline: CameraPipeline,
@@ -102,8 +105,9 @@ struct ContentView: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let notesSidebarWidth = effectiveNotesSidebarWidth(for: proxy.size.width)
             let sidebarOuterWidth = isPresentationNotesSidebarVisible
-                ? Self.notesSidebarWidth + Self.windowPadding
+                ? notesSidebarWidth + Self.windowPadding
                 : 0
             let contentSize = CGSize(
                 width: max(0, proxy.size.width - sidebarOuterWidth),
@@ -115,8 +119,11 @@ struct ContentView: View {
                     .frame(width: contentSize.width)
 
                 if isPresentationNotesSidebarVisible {
-                    presentationNotesSidebar
-                        .frame(width: Self.notesSidebarWidth)
+                    presentationNotesSidebarContainer(
+                        width: notesSidebarWidth,
+                        maximumWidth: maximumNotesSidebarWidth(for: proxy.size.width)
+                    )
+                        .frame(width: notesSidebarWidth)
                         .frame(maxHeight: .infinity)
                         .padding(.vertical, Self.windowPadding)
                         .padding(.trailing, Self.windowPadding)
@@ -125,7 +132,7 @@ struct ContentView: View {
             }
             .animation(.easeInOut(duration: 0.18), value: isPresentationNotesSidebarVisible)
         }
-        .frame(minWidth: isPresentationNotesSidebarVisible ? Self.notesMinimumWindowWidth : Self.minimumWindowWidth, minHeight: 460)
+        .frame(minWidth: isPresentationNotesSidebarVisible ? minimumWindowWidthWithNotes : Self.minimumWindowWidth, minHeight: 460)
         .background(windowBackground)
         .onAppear {
             pipeline.refreshCameras()
@@ -210,6 +217,38 @@ struct ContentView: View {
                 }
             )
         }
+    }
+
+    private var storedNotesSidebarWidth: CGFloat {
+        let width = CGFloat(presentationNotesSidebarWidth)
+        return width.isFinite ? width : Self.notesSidebarDefaultWidth
+    }
+
+    private var minimumWindowWidthWithNotes: CGFloat {
+        Self.minimumWindowWidth + clampedNotesSidebarWidth(storedNotesSidebarWidth) + Self.windowPadding
+    }
+
+    private func effectiveNotesSidebarWidth(for windowWidth: CGFloat) -> CGFloat {
+        clampedNotesSidebarWidth(storedNotesSidebarWidth, maximumWidth: maximumNotesSidebarWidth(for: windowWidth))
+    }
+
+    private func maximumNotesSidebarWidth(for windowWidth: CGFloat) -> CGFloat {
+        let availableWidth = windowWidth - Self.minimumWindowWidth - Self.windowPadding
+        return max(
+            Self.notesSidebarMinimumWidth,
+            min(Self.notesSidebarMaximumWidth, availableWidth)
+        )
+    }
+
+    private func clampedNotesSidebarWidth(_ width: CGFloat) -> CGFloat {
+        clampedNotesSidebarWidth(width, maximumWidth: Self.notesSidebarMaximumWidth)
+    }
+
+    private func clampedNotesSidebarWidth(_ width: CGFloat, maximumWidth: CGFloat) -> CGFloat {
+        min(
+            max(width, Self.notesSidebarMinimumWidth),
+            max(Self.notesSidebarMinimumWidth, maximumWidth)
+        )
     }
 
     private func mainContent(windowSize: CGSize) -> some View {
@@ -359,15 +398,16 @@ struct ContentView: View {
 
     private var controlsPanel: some View {
         LiquidGlassSurface(cornerRadius: Self.windowCornerRadius) {
-            ScrollView([.vertical, .horizontal]) {
+            ScrollView(.horizontal) {
                 tabContent
                     .padding(.horizontal, Self.controlsPanelHorizontalPadding)
                     .padding(.vertical, Self.controlsPanelVerticalPadding)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(height: Self.controlsPanelHeight, alignment: .top)
             .id(selectedTab)
         }
-        .frame(height: Self.controlsPanelHeight)
+        .frame(height: Self.controlsPanelHeight, alignment: .top)
     }
 
     private func previewHeight(for windowSize: CGSize) -> CGFloat {
@@ -868,6 +908,57 @@ struct ContentView: View {
             .padding(16)
             .frame(maxHeight: .infinity)
         }
+    }
+
+    private func presentationNotesSidebarContainer(width: CGFloat, maximumWidth: CGFloat) -> some View {
+        ZStack(alignment: .leading) {
+            presentationNotesSidebar
+                .frame(width: width)
+
+            notesSidebarResizeHandle(width: width, maximumWidth: maximumWidth)
+                .offset(x: -7)
+        }
+    }
+
+    private func notesSidebarResizeHandle(width: CGFloat, maximumWidth: CGFloat) -> some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.001))
+            .frame(width: 14)
+            .overlay {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.38))
+                    .frame(width: 3, height: 44)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        let startWidth = notesSidebarDragStartWidth ?? width
+                        notesSidebarDragStartWidth = startWidth
+
+                        let requestedWidth = startWidth - value.translation.width
+                        presentationNotesSidebarWidth = Double(
+                            clampedNotesSidebarWidth(requestedWidth, maximumWidth: maximumWidth)
+                        )
+                    }
+                    .onEnded { value in
+                        let startWidth = notesSidebarDragStartWidth ?? width
+                        let requestedWidth = startWidth - value.translation.width
+                        presentationNotesSidebarWidth = Double(
+                            clampedNotesSidebarWidth(requestedWidth, maximumWidth: maximumWidth)
+                        )
+                        notesSidebarDragStartWidth = nil
+                    }
+            )
+            .onHover { isHovering in
+                if isHovering {
+                    NSCursor.resizeLeftRight.set()
+                } else {
+                    NSCursor.arrow.set()
+                }
+            }
+            .help("Resize notes sidebar")
+            .accessibilityLabel("Resize notes sidebar")
     }
 
     @ViewBuilder
