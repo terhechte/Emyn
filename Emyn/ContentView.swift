@@ -53,7 +53,8 @@ struct ContentView: View {
     private static let notesSidebarWidth: CGFloat = 360
     private static let notesMinimumWindowWidth = minimumWindowWidth + notesSidebarWidth + windowPadding
     private static let softwareCursorBaseSize: CGFloat = 32
-    private static let softwareCursorDefaultScale: CGFloat = 2
+    private static let softwareCursorDefaultScale = 2.0
+    private static let softwareCursorMinimumScale = softwareCursorDefaultScale / 8
     private static let softwareCursorHotspot = CGPoint(x: 2, y: 2)
     private static let speechTestSentence = "The quick brown fox jumps over the lazy dog"
     private static let softwareCursorImage: NSImage? = {
@@ -78,9 +79,12 @@ struct ContentView: View {
     @State private var isWindowBackgroundPickerPresented = false
     @State private var isFunctionKeyConfigurationPresented = false
     @State private var previewNSView: SampleBufferPreviewView?
-    @State private var cursorScale = Self.softwareCursorDefaultScale
+    @State private var cursorAttentionScale: Double?
     @State private var cursorAttentionTask: Task<Void, Never>?
+    @State private var isSoftwareCursorPreviewVisible = false
+    @State private var cursorPreviewTask: Task<Void, Never>?
     @AppStorage("excludeFunctionKeysDuringWindowControl") private var excludeFunctionKeysDuringWindowControl = true
+    @AppStorage("softwareCursorScale.v1") private var softwareCursorScale = Self.softwareCursorDefaultScale
     @AppStorage("presentationNotesText.v1") private var presentationNotesText = ""
     @AppStorage("presentationNotesFontSize.v1") private var presentationNotesFontSize = 18.0
 
@@ -131,6 +135,8 @@ struct ContentView: View {
         }
         .onDisappear {
             cursorAttentionTask?.cancel()
+            cursorPreviewTask?.cancel()
+            isSoftwareCursorPreviewVisible = false
             functionKeys.stopMonitoring()
             speechTranscriber.stopTranscribing(clearText: true)
             pipeline.setSpeechCaptionOverlay(text: nil, configuration: speechToText.captionRenderConfiguration)
@@ -266,6 +272,17 @@ struct ContentView: View {
                         softwareCursor(at: position)
                     }
                     .allowsHitTesting(false)
+                } else if isSoftwareCursorPreviewVisible {
+                    GeometryReader { proxy in
+                        softwareCursor(
+                            at: CGPoint(
+                                x: proxy.size.width * 0.5,
+                                y: proxy.size.height * 0.5
+                            )
+                        )
+                    }
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
                 }
 
                 HStack(spacing: 10) {
@@ -851,6 +868,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private func softwareCursor(at position: CGPoint) -> some View {
+        let cursorScale = CGFloat(effectiveSoftwareCursorScale)
         let cursorSize = Self.softwareCursorBaseSize * cursorScale
 
         if let cursorImage = Self.softwareCursorImage {
@@ -1178,6 +1196,26 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(previewNSView == nil)
 
+                VStack(alignment: .leading, spacing: 6) {
+                    valueHeader("Cursor Size", value: softwareCursorScaleTitle)
+
+                    Slider(
+                        value: softwareCursorScaleSelection,
+                        in: Self.softwareCursorMinimumScale...Self.softwareCursorDefaultScale
+                    )
+                    .controlSize(.small)
+
+                    Button {
+                        showSoftwareCursorPreview()
+                    } label: {
+                        Label("Preview Cursor", systemImage: "cursorarrow.rays")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(previewNSView == nil)
+                }
+
                 statusLine(windowControl.statusText)
             }
         } else {
@@ -1309,6 +1347,37 @@ struct ContentView: View {
             speechToText.captionBackgroundColor.swiftUIColor
         } set: { newValue in
             speechToText.captionBackgroundColor = SpeechToTextColor(color: newValue)
+        }
+    }
+
+    private var clampedSoftwareCursorScale: Double {
+        max(
+            Self.softwareCursorMinimumScale,
+            min(Self.softwareCursorDefaultScale, softwareCursorScale)
+        )
+    }
+
+    private var effectiveSoftwareCursorScale: Double {
+        cursorAttentionScale ?? clampedSoftwareCursorScale
+    }
+
+    private var softwareCursorScaleTitle: String {
+        let percent = clampedSoftwareCursorScale / Self.softwareCursorDefaultScale * 100
+        return "\(Int(percent.rounded()))%"
+    }
+
+    private var softwareCursorScaleSelection: Binding<Double> {
+        Binding {
+            clampedSoftwareCursorScale
+        } set: { newValue in
+            cursorAttentionTask?.cancel()
+            cursorAttentionTask = nil
+            cursorAttentionScale = nil
+            softwareCursorScale = max(
+                Self.softwareCursorMinimumScale,
+                min(Self.softwareCursorDefaultScale, newValue)
+            )
+            showSoftwareCursorPreview()
         }
     }
 
@@ -1482,23 +1551,51 @@ struct ContentView: View {
         }
     }
 
+    private func showSoftwareCursorPreview() {
+        guard !windowControl.isActive else { return }
+
+        cursorPreviewTask?.cancel()
+        withAnimation(.easeOut(duration: 0.12)) {
+            isSoftwareCursorPreviewVisible = true
+        }
+
+        cursorPreviewTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeIn(duration: 0.18)) {
+                isSoftwareCursorPreviewVisible = false
+            }
+        }
+    }
+
     private func drawAttentionToCursor() {
         cursorAttentionTask?.cancel()
-        cursorScale = Self.softwareCursorDefaultScale
+        cursorAttentionScale = nil
+        let restingScale = clampedSoftwareCursorScale
 
         cursorAttentionTask = Task { @MainActor in
-            let scales: [CGFloat] = [4, 1, 3, 1.5, 2.5, Self.softwareCursorDefaultScale]
+            let scales = [
+                restingScale * 2.0,
+                restingScale * 0.5,
+                restingScale * 1.5,
+                restingScale * 0.75,
+                restingScale * 1.25,
+                restingScale
+            ]
             let stepDuration = 250_000_000
 
             for scale in scales {
                 guard !Task.isCancelled else { return }
 
                 withAnimation(.spring(response: 0.18, dampingFraction: 0.46, blendDuration: 0)) {
-                    cursorScale = scale
+                    cursorAttentionScale = scale
                 }
 
                 try? await Task.sleep(nanoseconds: UInt64(stepDuration))
             }
+
+            cursorAttentionScale = nil
         }
     }
 }
