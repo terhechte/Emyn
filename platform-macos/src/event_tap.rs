@@ -10,16 +10,32 @@
 use std::ffi::{c_char, c_void};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex, OnceLock,
+    mpsc, Arc, Mutex, OnceLock,
 };
+use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // ── FFI ───────────────────────────────────────────────────────────────────────
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct RawPoint {
     x: f64,
     y: f64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RawSize {
+    width: f64,
+    height: f64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RawRect {
+    origin: RawPoint,
+    size: RawSize,
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -56,6 +72,7 @@ extern "C" {
     fn CGEventPostToPid(pid: i32, event: *mut c_void);
 
     fn CGEventGetIntegerValueField(event: *mut c_void, field: u32) -> i64;
+    fn CGEventSetIntegerValueField(event: *mut c_void, field: u32, value: i64);
 
     /// Returns the CGEventFlags bitmask for an event.
     /// This is the correct API for reading modifier state — there is no
@@ -66,7 +83,14 @@ extern "C" {
     fn CGDisplayHideCursor(display: u32) -> i32;
     fn CGDisplayShowCursor(display: u32) -> i32;
     fn CGWarpMouseCursorPosition(x: f64, y: f64) -> i32;
+    fn CGAssociateMouseAndMouseCursorPosition(connected: bool) -> i32;
     fn CGMainDisplayID() -> u32;
+    fn CGDisplayBounds(display: u32) -> RawRect;
+    fn CGGetActiveDisplayList(
+        max_displays: u32,
+        active_displays: *mut u32,
+        display_count: *mut u32,
+    ) -> i32;
 }
 
 extern "C" {
@@ -124,6 +148,15 @@ const FIELD_KEYCODE: u32 = 9;
 // CGEventField: kCGMouseEventClickState / kCGMouseEventButtonNumber
 const FIELD_MOUSE_CLICK_STATE: u32 = 1;
 const FIELD_MOUSE_BUTTON: u32 = 3;
+// CGEventField: kCGMouseEventDeltaX / kCGMouseEventDeltaY. These are logged
+// only for diagnostics because they are raw HID deltas, not normal pointer
+// speed/acceleration in screen points.
+const FIELD_MOUSE_DELTA_X: u32 = 4;
+const FIELD_MOUSE_DELTA_Y: u32 = 5;
+// CGEventField: kCGEventSourceUserData. Used to recognize events we
+// synthesize/forward so they do not recursively feed back into this tap.
+const FIELD_EVENT_SOURCE_USER_DATA: u32 = 42;
+const FORWARDED_MOUSE_EVENT_MARKER: i64 = 0x45_4d_59_4e_43_55_52_53;
 
 // macOS virtual key codes for Option keys
 const VK_OPTION: i64 = 58;
@@ -178,9 +211,18 @@ pub struct TapState {
     pub alt_press_times: Mutex<Vec<Instant>>,
     // Shared click-group id for down/drag/up sequences routed to a background window.
     pub current_click_group: Mutex<Option<i64>>,
-    // Virtual pointer constrained to the controllable view. This avoids
-    // accumulating off-edge physical cursor travel while the hidden cursor is grabbed.
+    // Virtual pointer constrained to the controllable view.
     virtual_cursor: Mutex<RawPoint>,
+    // Last known location of the hidden WindowServer cursor. We read deltas
+    // between event locations to keep system pointer acceleration, while the
+    // virtual cursor owns wrapping/clamping behavior.
+    hidden_cursor: Mutex<RawPoint>,
+    desktop_bounds: RawRect,
+    display_bounds: Vec<RawRect>,
+    mouse_forwarder: mpsc::Sender<ForwardedMouseEvent>,
+    cursor_hidden: AtomicBool,
+    last_cursor_debug_log: Mutex<Option<Instant>>,
+    last_ignored_forwarded_event_log: Mutex<Option<Instant>>,
     // Pointer back to the port so the callback can re-enable it on timeout.
     pub tap_port: Mutex<*mut c_void>,
 }
@@ -189,6 +231,11 @@ pub struct TapState {
 // tap callback. The Mutex fields add the required Sync bound for Arc.
 unsafe impl Send for TapState {}
 unsafe impl Sync for TapState {}
+
+struct ForwardedMouseEvent {
+    target_pid: i32,
+    event: usize,
+}
 
 // ── C-level callback ──────────────────────────────────────────────────────────
 
@@ -207,8 +254,19 @@ unsafe extern "C" fn tap_callback(
     // Re-cast to TapState. The TapState is kept alive by EventTapSession.
     let state = &*(user_info as *const TapState);
 
+    if CGEventGetIntegerValueField(event, FIELD_EVENT_SOURCE_USER_DATA)
+        == FORWARDED_MOUSE_EVENT_MARKER
+    {
+        debug_forwarded_event_ignored(state, event_type);
+        return std::ptr::null_mut();
+    }
+
     // Re-enable if the system disabled the tap.
     if event_type == EV_TAP_DISABLED_BY_TIMEOUT || event_type == EV_TAP_DISABLED_BY_USER_INPUT {
+        debug_event_tap(format_args!(
+            "{} received; re-enabling event tap",
+            event_type_name(event_type)
+        ));
         let port = *state.tap_port.lock().unwrap_or_else(|e| e.into_inner());
         if !port.is_null() {
             CGEventTapEnable(port, true);
@@ -250,9 +308,10 @@ unsafe extern "C" fn tap_callback(
                             post_keyboard_event_to_target(state, forward_event);
                             CFRelease(forward_event);
                         }
-                        // Trigger deactivation on next run-loop tick.
+                        // Tear down the grab immediately; the queued Swift
+                        // event only updates UI state.
+                        stop_tap_and_reveal_cursor(state);
                         let deactivate = Arc::clone(&state.on_deactivate);
-                        // We can call the callback directly since we're already on the main thread.
                         deactivate();
                         return std::ptr::null_mut();
                     }
@@ -309,59 +368,430 @@ unsafe extern "C" fn tap_callback(
     let copy = CGEventCreateCopy(event);
     if !copy.is_null() {
         CGEventSetLocation(copy, target_x, target_y);
+        CGEventSetIntegerValueField(
+            copy,
+            FIELD_EVENT_SOURCE_USER_DATA,
+            FORWARDED_MOUSE_EVENT_MARKER,
+        );
         stamp_mouse_routing_fields(state, event_type, copy, target_local_x, target_local_y);
-        crate::input::skylight::post_to_pid(state.target_pid as libc::pid_t, copy, false);
-        CGEventPostToPid(state.target_pid, copy);
-        CFRelease(copy);
+        enqueue_mouse_event_for_forwarding(state, copy);
     }
 
     std::ptr::null_mut() // suppress original
 }
 
+unsafe fn enqueue_mouse_event_for_forwarding(state: &TapState, event: *mut c_void) {
+    if let Err(err) = state.mouse_forwarder.send(ForwardedMouseEvent {
+        target_pid: state.target_pid,
+        event: event as usize,
+    }) {
+        debug_event_tap(format_args!(
+            "dropping forwarded mouse event because worker is unavailable: {}",
+            err
+        ));
+        CFRelease(event);
+    }
+}
+
+fn spawn_mouse_forwarder() -> mpsc::Sender<ForwardedMouseEvent> {
+    let (sender, receiver) = mpsc::channel::<ForwardedMouseEvent>();
+    let _ = thread::Builder::new()
+        .name("emyn-mouse-forwarder".to_owned())
+        .spawn(move || {
+            for forwarded in receiver {
+                unsafe {
+                    let event = forwarded.event as *mut c_void;
+                    let skylight_posted = crate::input::skylight::post_to_pid(
+                        forwarded.target_pid as libc::pid_t,
+                        event,
+                        false,
+                    );
+                    if !skylight_posted {
+                        CGEventPostToPid(forwarded.target_pid, event);
+                    }
+                    CFRelease(event);
+                }
+            }
+        });
+    sender
+}
+
 unsafe fn update_virtual_cursor(
     state: &TapState,
-    _event_type: u32,
+    event_type: u32,
     event: *mut c_void,
 ) -> (f64, f64) {
-    // The event location is the hidden system cursor's position, which the
-    // window server moves with the user's normal pointer speed/acceleration.
-    // The kCGMouseEventDelta fields carry raw unaccelerated HID counts, so
-    // deriving movement from them makes the virtual cursor track the mouse's
-    // hardware CPI instead of the system pointer speed.
+    // The event location is the hidden system cursor's accelerated position.
+    // Taking deltas between locations preserves normal pointer speed while the
+    // virtual cursor owns the view-space wrapping behavior.
     let raw_loc = CGEventGetLocation(event);
 
-    let mut cursor = state.virtual_cursor.lock().unwrap_or_else(|e| e.into_inner());
-    clamp_virtual_cursor_to_view(
-        &mut cursor,
-        raw_loc.x,
-        raw_loc.y,
-        state.view_x,
-        state.view_y,
-        state.view_w,
-        state.view_h,
+    let mut cursor = state
+        .virtual_cursor
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut hidden_cursor = state
+        .hidden_cursor
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let cursor_before = *cursor;
+    let hidden_before = *hidden_cursor;
+    let mut location_delta = RawPoint { x: 0.0, y: 0.0 };
+
+    if is_mouse_motion_event(event_type) {
+        let delta_x = raw_loc.x - hidden_cursor.x;
+        let delta_y = raw_loc.y - hidden_cursor.y;
+        location_delta = RawPoint {
+            x: delta_x,
+            y: delta_y,
+        };
+        apply_wrapped_virtual_cursor_delta(
+            &mut cursor,
+            delta_x,
+            delta_y,
+            state.view_x,
+            state.view_y,
+            state.view_w,
+            state.view_h,
+        );
+    }
+
+    debug_cursor_motion(
+        state,
+        event_type,
+        event,
+        raw_loc,
+        hidden_before,
+        location_delta,
+        cursor_before,
+        *cursor,
     );
 
-    // Pull the hidden system cursor back whenever it strays outside the view,
-    // so off-edge physical travel is discarded immediately and reversing
-    // direction responds on the next event.
-    if (raw_loc.x - cursor.x).abs() > 0.5 || (raw_loc.y - cursor.y).abs() > 0.5 {
-        CGWarpMouseCursorPosition(cursor.x, cursor.y);
-    }
+    *hidden_cursor = raw_loc;
+    maybe_recenter_hidden_cursor(
+        &mut hidden_cursor,
+        &state.display_bounds,
+        state.desktop_bounds,
+    );
 
     (cursor.x, cursor.y)
 }
 
-fn clamp_virtual_cursor_to_view(
+fn is_mouse_motion_event(event_type: u32) -> bool {
+    matches!(
+        event_type,
+        EV_MOUSE_MOVED | EV_LEFT_MOUSE_DRAGGED | EV_RIGHT_MOUSE_DRAGGED | EV_OTHER_MOUSE_DRAGGED
+    )
+}
+
+fn apply_wrapped_virtual_cursor_delta(
     cursor: &mut RawPoint,
-    x: f64,
-    y: f64,
+    delta_x: f64,
+    delta_y: f64,
     view_x: f64,
     view_y: f64,
     view_w: f64,
     view_h: f64,
 ) {
-    cursor.x = x.clamp(view_x, view_x + view_w);
-    cursor.y = y.clamp(view_y, view_y + view_h);
+    cursor.x = wrap_coordinate(cursor.x + delta_x, view_x, view_w);
+    cursor.y = wrap_coordinate(cursor.y + delta_y, view_y, view_h);
+}
+
+fn wrap_coordinate(value: f64, min: f64, length: f64) -> f64 {
+    if length <= 0.0 {
+        return min;
+    }
+
+    let max = min + length;
+    if (min..=max).contains(&value) {
+        value
+    } else {
+        min + (value - min).rem_euclid(length)
+    }
+}
+
+fn hidden_cursor_anchor(view_x: f64, view_y: f64, view_w: f64, view_h: f64) -> RawPoint {
+    RawPoint {
+        x: view_x + view_w * 0.5,
+        y: view_y + view_h * 0.5,
+    }
+}
+
+unsafe fn debug_cursor_motion(
+    state: &TapState,
+    event_type: u32,
+    event: *mut c_void,
+    raw_loc: RawPoint,
+    hidden_before: RawPoint,
+    location_delta: RawPoint,
+    cursor_before: RawPoint,
+    cursor_after: RawPoint,
+) {
+    if !event_tap_debug_enabled() {
+        return;
+    }
+
+    let now = Instant::now();
+    let mut last_log = state
+        .last_cursor_debug_log
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let force_log = !is_mouse_motion_event(event_type)
+        || location_delta.x.abs() > 64.0
+        || location_delta.y.abs() > 64.0;
+    let should_log = force_log
+        || last_log
+            .map(|last| now.duration_since(last).as_millis() >= 250)
+            .unwrap_or(true);
+
+    if !should_log {
+        return;
+    }
+    *last_log = Some(now);
+
+    let hid_delta_x = CGEventGetIntegerValueField(event, FIELD_MOUSE_DELTA_X);
+    let hid_delta_y = CGEventGetIntegerValueField(event, FIELD_MOUSE_DELTA_Y);
+    debug_event_tap(format_args!(
+        "cursor event={} raw_loc=({:.1},{:.1}) hidden_prev=({:.1},{:.1}) loc_delta=({:.1},{:.1}) hid_delta=({},{}) virtual=({:.1},{:.1})->({:.1},{:.1}) view=({:.1},{:.1},{:.1},{:.1}) desktop=({:.1},{:.1},{:.1},{:.1})",
+        event_type_name(event_type),
+        raw_loc.x,
+        raw_loc.y,
+        hidden_before.x,
+        hidden_before.y,
+        location_delta.x,
+        location_delta.y,
+        hid_delta_x,
+        hid_delta_y,
+        cursor_before.x,
+        cursor_before.y,
+        cursor_after.x,
+        cursor_after.y,
+        state.view_x,
+        state.view_y,
+        state.view_w,
+        state.view_h,
+        state.desktop_bounds.origin.x,
+        state.desktop_bounds.origin.y,
+        state.desktop_bounds.size.width,
+        state.desktop_bounds.size.height
+    ));
+}
+
+fn maybe_recenter_hidden_cursor(
+    hidden_cursor: &mut RawPoint,
+    display_bounds: &[RawRect],
+    desktop_bounds: RawRect,
+) {
+    let bounds = cursor_display_bounds(*hidden_cursor, display_bounds, desktop_bounds);
+    if !raw_rect_is_valid(bounds) {
+        return;
+    }
+
+    let margin = 96.0;
+    let min_x = bounds.origin.x;
+    let max_x = bounds.origin.x + bounds.size.width;
+    let min_y = bounds.origin.y;
+    let max_y = bounds.origin.y + bounds.size.height;
+
+    let outside_display = !raw_rect_contains_point(bounds, *hidden_cursor);
+    if outside_display
+        || hidden_cursor.x <= min_x + margin
+        || hidden_cursor.x >= max_x - margin
+        || hidden_cursor.y <= min_y + margin
+        || hidden_cursor.y >= max_y - margin
+    {
+        let before = *hidden_cursor;
+        *hidden_cursor = RawPoint {
+            x: bounds.origin.x + bounds.size.width * 0.5,
+            y: bounds.origin.y + bounds.size.height * 0.5,
+        };
+        debug_event_tap(format_args!(
+            "recentering hidden cursor from ({:.1},{:.1}) to ({:.1},{:.1}) bounds=({:.1},{:.1},{:.1},{:.1}) outside_display={} desktop=({:.1},{:.1},{:.1},{:.1}) display_count={}",
+            before.x,
+            before.y,
+            hidden_cursor.x,
+            hidden_cursor.y,
+            bounds.origin.x,
+            bounds.origin.y,
+            bounds.size.width,
+            bounds.size.height,
+            outside_display,
+            desktop_bounds.origin.x,
+            desktop_bounds.origin.y,
+            desktop_bounds.size.width,
+            desktop_bounds.size.height,
+            display_bounds.len()
+        ));
+        unsafe {
+            warp_hidden_cursor_to(*hidden_cursor);
+        }
+    }
+}
+
+fn cursor_display_bounds(
+    point: RawPoint,
+    display_bounds: &[RawRect],
+    desktop_bounds: RawRect,
+) -> RawRect {
+    containing_display_bounds(point, display_bounds)
+        .or_else(|| nearest_display_bounds(point, display_bounds))
+        .unwrap_or(desktop_bounds)
+}
+
+fn containing_display_bounds(point: RawPoint, display_bounds: &[RawRect]) -> Option<RawRect> {
+    display_bounds
+        .iter()
+        .copied()
+        .find(|bounds| raw_rect_contains_point(*bounds, point))
+}
+
+fn nearest_display_bounds(point: RawPoint, display_bounds: &[RawRect]) -> Option<RawRect> {
+    display_bounds.iter().copied().min_by(|a, b| {
+        raw_rect_distance_squared(*a, point)
+            .partial_cmp(&raw_rect_distance_squared(*b, point))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
+fn raw_rect_distance_squared(rect: RawRect, point: RawPoint) -> f64 {
+    let min_x = rect.origin.x;
+    let max_x = rect.origin.x + rect.size.width;
+    let min_y = rect.origin.y;
+    let max_y = rect.origin.y + rect.size.height;
+
+    let dx = if point.x < min_x {
+        min_x - point.x
+    } else if point.x > max_x {
+        point.x - max_x
+    } else {
+        0.0
+    };
+    let dy = if point.y < min_y {
+        min_y - point.y
+    } else if point.y > max_y {
+        point.y - max_y
+    } else {
+        0.0
+    };
+
+    dx * dx + dy * dy
+}
+
+fn raw_rect_contains_point(rect: RawRect, point: RawPoint) -> bool {
+    let max_x = rect.origin.x + rect.size.width;
+    let max_y = rect.origin.y + rect.size.height;
+    point.x >= rect.origin.x && point.x <= max_x && point.y >= rect.origin.y && point.y <= max_y
+}
+
+fn raw_rect_is_valid(rect: RawRect) -> bool {
+    rect.size.width > 0.0 && rect.size.height > 0.0
+}
+
+unsafe fn warp_hidden_cursor_to(point: RawPoint) {
+    CGWarpMouseCursorPosition(point.x, point.y);
+    CGAssociateMouseAndMouseCursorPosition(true);
+}
+
+unsafe fn active_display_layout(fallback: RawRect) -> (RawRect, Vec<RawRect>) {
+    let mut displays = [0u32; 16];
+    let mut count = 0u32;
+    if CGGetActiveDisplayList(displays.len() as u32, displays.as_mut_ptr(), &mut count) != 0
+        || count == 0
+    {
+        return (fallback, vec![fallback]);
+    }
+
+    let mut union: Option<RawRect> = None;
+    let mut bounds_list = Vec::new();
+    for display in displays.iter().copied().take(count as usize) {
+        let bounds = CGDisplayBounds(display);
+        if !raw_rect_is_valid(bounds) {
+            continue;
+        }
+
+        bounds_list.push(bounds);
+        union = Some(match union {
+            Some(current) => union_raw_rects(current, bounds),
+            None => bounds,
+        });
+    }
+
+    if bounds_list.is_empty() {
+        (fallback, vec![fallback])
+    } else {
+        (union.unwrap_or(fallback), bounds_list)
+    }
+}
+
+fn union_raw_rects(a: RawRect, b: RawRect) -> RawRect {
+    let min_x = a.origin.x.min(b.origin.x);
+    let min_y = a.origin.y.min(b.origin.y);
+    let max_x = (a.origin.x + a.size.width).max(b.origin.x + b.size.width);
+    let max_y = (a.origin.y + a.size.height).max(b.origin.y + b.size.height);
+
+    RawRect {
+        origin: RawPoint { x: min_x, y: min_y },
+        size: RawSize {
+            width: max_x - min_x,
+            height: max_y - min_y,
+        },
+    }
+}
+
+fn view_rect(view_x: f64, view_y: f64, view_w: f64, view_h: f64) -> RawRect {
+    RawRect {
+        origin: RawPoint {
+            x: view_x,
+            y: view_y,
+        },
+        size: RawSize {
+            width: view_w,
+            height: view_h,
+        },
+    }
+}
+
+fn format_display_bounds(bounds: &[RawRect]) -> String {
+    bounds
+        .iter()
+        .map(|rect| {
+            format!(
+                "({:.1},{:.1},{:.1},{:.1})",
+                rect.origin.x, rect.origin.y, rect.size.width, rect.size.height
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+unsafe fn hide_cursor(state: &TapState) {
+    if !state.cursor_hidden.swap(true, Ordering::Relaxed) {
+        debug_event_tap(format_args!("hide system cursor"));
+        CGDisplayHideCursor(CGMainDisplayID());
+    }
+}
+
+unsafe fn reveal_cursor(state: &TapState) {
+    if state.cursor_hidden.swap(false, Ordering::Relaxed) {
+        debug_event_tap(format_args!("show system cursor"));
+        CGDisplayShowCursor(CGMainDisplayID());
+    }
+}
+
+unsafe fn stop_tap_and_reveal_cursor(state: &TapState) {
+    debug_event_tap(format_args!("stopping tap and restoring cursor"));
+    let port = *state.tap_port.lock().unwrap_or_else(|e| e.into_inner());
+    if !port.is_null() {
+        CGEventTapEnable(port, false);
+    }
+    if let Ok(cursor) = state.virtual_cursor.lock() {
+        debug_event_tap(format_args!(
+            "warping system cursor to virtual cursor ({:.1},{:.1})",
+            cursor.x, cursor.y
+        ));
+        warp_hidden_cursor_to(*cursor);
+    }
+    reveal_cursor(state);
 }
 
 fn log_incoming_key_event(state: &TapState, event_type: u32, keycode: i64, flags: u64) {
@@ -378,9 +808,22 @@ fn log_incoming_key_event(state: &TapState, event_type: u32, keycode: i64, flags
 
 fn event_type_name(event_type: u32) -> &'static str {
     match event_type {
+        EV_LEFT_MOUSE_DOWN => "leftMouseDown",
+        EV_LEFT_MOUSE_UP => "leftMouseUp",
+        EV_RIGHT_MOUSE_DOWN => "rightMouseDown",
+        EV_RIGHT_MOUSE_UP => "rightMouseUp",
+        EV_MOUSE_MOVED => "mouseMoved",
+        EV_LEFT_MOUSE_DRAGGED => "leftMouseDragged",
+        EV_RIGHT_MOUSE_DRAGGED => "rightMouseDragged",
         EV_KEY_DOWN => "keyDown",
         EV_KEY_UP => "keyUp",
         EV_FLAGS_CHANGED => "flagsChanged",
+        EV_SCROLL_WHEEL => "scrollWheel",
+        EV_OTHER_MOUSE_DOWN => "otherMouseDown",
+        EV_OTHER_MOUSE_UP => "otherMouseUp",
+        EV_OTHER_MOUSE_DRAGGED => "otherMouseDragged",
+        EV_TAP_DISABLED_BY_TIMEOUT => "tapDisabledByTimeout",
+        EV_TAP_DISABLED_BY_USER_INPUT => "tapDisabledByUserInput",
         _ => "unknown",
     }
 }
@@ -516,8 +959,34 @@ unsafe fn post_keyboard_event_to_window_owner(
 }
 
 fn debug_event_tap(args: std::fmt::Arguments<'_>) {
-    if std::env::var_os("EMYN_EVENT_TAP_DEBUG").is_some() {
+    if event_tap_debug_enabled() {
         eprintln!("[event_tap] {args}");
+    }
+}
+
+fn event_tap_debug_enabled() -> bool {
+    std::env::var_os("EMYN_EVENT_TAP_DEBUG").is_some()
+}
+
+fn debug_forwarded_event_ignored(state: &TapState, event_type: u32) {
+    if !event_tap_debug_enabled() {
+        return;
+    }
+
+    let now = Instant::now();
+    let mut last_log = state
+        .last_ignored_forwarded_event_log
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let should_log = last_log
+        .map(|last| now.duration_since(last).as_millis() >= 500)
+        .unwrap_or(true);
+    if should_log {
+        *last_log = Some(now);
+        debug_event_tap(format_args!(
+            "ignoring forwarded {} event re-entering tap",
+            event_type_name(event_type)
+        ));
     }
 }
 
@@ -737,6 +1206,29 @@ impl EventTapSession {
             event_mask()
         );
 
+        let initial_cursor = hidden_cursor_anchor(view_x, view_y, view_w, view_h);
+        let (desktop_bounds, display_bounds) =
+            unsafe { active_display_layout(view_rect(view_x, view_y, view_w, view_h)) };
+        let mouse_forwarder = spawn_mouse_forwarder();
+        debug_event_tap(format_args!(
+            "cursor setup view=({:.1},{:.1},{:.1},{:.1}) target=({:.1},{:.1},{:.1},{:.1}) desktop=({:.1},{:.1},{:.1},{:.1}) displays={} display_bounds={} initial=({:.1},{:.1})",
+            view_x,
+            view_y,
+            view_w,
+            view_h,
+            target_x,
+            target_y,
+            target_w,
+            target_h,
+            desktop_bounds.origin.x,
+            desktop_bounds.origin.y,
+            desktop_bounds.size.width,
+            desktop_bounds.size.height,
+            display_bounds.len(),
+            format_display_bounds(&display_bounds),
+            initial_cursor.x,
+            initial_cursor.y
+        ));
         let state = Box::new(TapState {
             target_pid,
             target_window_id,
@@ -756,10 +1248,14 @@ impl EventTapSession {
             on_deactivate,
             alt_press_times: Mutex::new(Vec::new()),
             current_click_group: Mutex::new(None),
-            virtual_cursor: Mutex::new(RawPoint {
-                x: view_x + view_w * 0.5,
-                y: view_y + view_h * 0.5,
-            }),
+            virtual_cursor: Mutex::new(initial_cursor),
+            hidden_cursor: Mutex::new(initial_cursor),
+            desktop_bounds,
+            display_bounds,
+            mouse_forwarder,
+            cursor_hidden: AtomicBool::new(false),
+            last_cursor_debug_log: Mutex::new(None),
+            last_ignored_forwarded_event_log: Mutex::new(None),
             tap_port: Mutex::new(std::ptr::null_mut()),
         });
 
@@ -793,10 +1289,8 @@ impl EventTapSession {
             let common_modes = kCFRunLoopCommonModes;
             CFRunLoopAddSource(CFRunLoopGetMain(), run_loop_source, common_modes);
             CGEventTapEnable(tap_port, true);
-            CGDisplayHideCursor(CGMainDisplayID());
-            // Start the hidden system cursor at the view centre so it agrees
-            // with the virtual cursor's initial position.
-            CGWarpMouseCursorPosition(view_x + view_w * 0.5, view_y + view_h * 0.5);
+            hide_cursor(&state);
+            warp_hidden_cursor_to(initial_cursor);
         }
 
         Ok(EventTapSession {
@@ -809,8 +1303,7 @@ impl EventTapSession {
     /// Disable the tap and restore the system cursor. Idempotent.
     pub fn stop(&self) {
         unsafe {
-            CGEventTapEnable(self.tap_port, false);
-            CGDisplayShowCursor(CGMainDisplayID());
+            stop_tap_and_reveal_cursor(&self._state);
             if !self.run_loop_source.is_null() {
                 let common_modes = kCFRunLoopCommonModes;
                 CFRunLoopRemoveSource(CFRunLoopGetMain(), self.run_loop_source, common_modes);
@@ -838,22 +1331,109 @@ mod tests {
     use super::*;
 
     #[test]
-    fn virtual_cursor_tracks_location_inside_view() {
+    fn virtual_cursor_wraps_left_to_right() {
         let mut cursor = RawPoint { x: 50.0, y: 50.0 };
 
-        clamp_virtual_cursor_to_view(&mut cursor, 30.0, 70.0, 0.0, 0.0, 100.0, 100.0);
+        apply_wrapped_virtual_cursor_delta(&mut cursor, -75.0, 0.0, 0.0, 0.0, 100.0, 100.0);
 
-        assert_eq!(cursor.x, 30.0);
-        assert_eq!(cursor.y, 70.0);
+        assert_eq!(cursor.x, 75.0);
+        assert_eq!(cursor.y, 50.0);
     }
 
     #[test]
-    fn virtual_cursor_clamps_each_axis_independently() {
+    fn virtual_cursor_wraps_right_to_left() {
         let mut cursor = RawPoint { x: 50.0, y: 50.0 };
 
-        clamp_virtual_cursor_to_view(&mut cursor, 125.0, -25.0, 0.0, 0.0, 100.0, 100.0);
+        apply_wrapped_virtual_cursor_delta(&mut cursor, 75.0, 0.0, 0.0, 0.0, 100.0, 100.0);
+
+        assert_eq!(cursor.x, 25.0);
+        assert_eq!(cursor.y, 50.0);
+    }
+
+    #[test]
+    fn virtual_cursor_wraps_each_axis_independently() {
+        let mut cursor = RawPoint { x: 50.0, y: 50.0 };
+
+        apply_wrapped_virtual_cursor_delta(&mut cursor, 75.0, -75.0, 0.0, 0.0, 100.0, 100.0);
+
+        assert_eq!(cursor.x, 25.0);
+        assert_eq!(cursor.y, 75.0);
+    }
+
+    #[test]
+    fn virtual_cursor_stays_on_exact_edges() {
+        let mut cursor = RawPoint { x: 50.0, y: 50.0 };
+
+        apply_wrapped_virtual_cursor_delta(&mut cursor, 50.0, -50.0, 0.0, 0.0, 100.0, 100.0);
 
         assert_eq!(cursor.x, 100.0);
         assert_eq!(cursor.y, 0.0);
+    }
+
+    #[test]
+    fn cursor_recenter_uses_containing_display_not_union() {
+        let displays = [
+            RawRect {
+                origin: RawPoint { x: 0.0, y: 0.0 },
+                size: RawSize {
+                    width: 1728.0,
+                    height: 1117.0,
+                },
+            },
+            RawRect {
+                origin: RawPoint { x: 1728.0, y: 0.0 },
+                size: RawSize {
+                    width: 2696.0,
+                    height: 1728.0,
+                },
+            },
+        ];
+        let point = RawPoint {
+            x: 1700.0,
+            y: 700.0,
+        };
+
+        let bounds = containing_display_bounds(point, &displays).unwrap();
+
+        assert_eq!(bounds, displays[0]);
+    }
+
+    #[test]
+    fn cursor_recenter_uses_real_display_for_internal_desktop_gap() {
+        let desktop = RawRect {
+            origin: RawPoint { x: 0.0, y: 0.0 },
+            size: RawSize {
+                width: 4424.0,
+                height: 1728.0,
+            },
+        };
+        let displays = [
+            RawRect {
+                origin: RawPoint { x: 0.0, y: 0.0 },
+                size: RawSize {
+                    width: 3072.0,
+                    height: 1728.0,
+                },
+            },
+            RawRect {
+                origin: RawPoint {
+                    x: 3072.0,
+                    y: 352.0,
+                },
+                size: RawSize {
+                    width: 1352.0,
+                    height: 878.0,
+                },
+            },
+        ];
+        let gap_point = RawPoint {
+            x: 3200.0,
+            y: 100.0,
+        };
+
+        let bounds = cursor_display_bounds(gap_point, &displays, desktop);
+
+        assert_ne!(bounds, desktop);
+        assert!(displays.contains(&bounds));
     }
 }
