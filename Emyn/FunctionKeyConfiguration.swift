@@ -76,6 +76,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
     case cycleWindowBackground
     case toggleNtscEffect
     case toggleTranscription
+    case toggleControlsBar
 
     var id: String { rawValue }
 
@@ -92,6 +93,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         case .cycleWindowBackground: return "Next Window"
         case .toggleNtscEffect: return "NTSC"
         case .toggleTranscription: return "Transcribe"
+        case .toggleControlsBar: return "Controls Bar"
         }
     }
 
@@ -108,6 +110,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         case .cycleWindowBackground: return "rectangle.stack"
         case .toggleNtscEffect: return "tv"
         case .toggleTranscription: return "waveform.and.mic"
+        case .toggleControlsBar: return "rectangle.bottomthird.inset.filled"
         }
     }
 
@@ -121,7 +124,8 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
             .drawAttentionToCursor,
             .triggerConfetti,
             .toggleNtscEffect,
-            .toggleTranscription
+            .toggleTranscription,
+            .toggleControlsBar
         ]
     }
 
@@ -129,7 +133,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .toggleWindowBackground, .toggleWindowZoom, .toggleWindowAndPerson, .cycleWindowBackground:
             return true
-        case .none, .togglePersonPosition, .toggleImageOverlay, .drawAttentionToCursor, .triggerConfetti, .toggleNtscEffect, .toggleTranscription:
+        case .none, .togglePersonPosition, .toggleImageOverlay, .drawAttentionToCursor, .triggerConfetti, .toggleNtscEffect, .toggleTranscription, .toggleControlsBar:
             return false
         }
     }

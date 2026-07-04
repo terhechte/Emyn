@@ -58,6 +58,7 @@ struct ContentView: View {
     private static let verticalSpacing: CGFloat = 16
     private static let tabBarHeight: CGFloat = 58
     private static let controlsPanelHeight: CGFloat = 220
+    private static let functionKeyMappingBarHeight: CGFloat = 58
     private static let controlsPanelHorizontalPadding: CGFloat = 22
     private static let controlsPanelVerticalPadding: CGFloat = 18
     private static let previewMinimumHeight: CGFloat = 180
@@ -96,6 +97,7 @@ struct ContentView: View {
     @State private var isSoftwareCursorPreviewVisible = false
     @State private var cursorPreviewTask: Task<Void, Never>?
     @State private var notesSidebarDragStartWidth: CGFloat?
+    @AppStorage("controlsBarCollapsed.v1") private var isControlsBarCollapsed = false
     @AppStorage("excludeFunctionKeysDuringWindowControl") private var excludeFunctionKeysDuringWindowControl = true
     @AppStorage("softwareCursorScale.v1") private var softwareCursorScale = Self.softwareCursorDefaultScale
     @AppStorage("presentationNotesText.v1") private var presentationNotesText = ""
@@ -309,14 +311,22 @@ struct ContentView: View {
                 previewPanel
                     .frame(height: previewHeight(for: windowSize))
 
-                tabBar
-                    .frame(height: Self.tabBarHeight)
+                if isControlsBarCollapsed {
+                    functionKeyMappingBar
+                        .frame(height: Self.functionKeyMappingBarHeight)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                } else {
+                    tabBar
+                        .frame(height: Self.tabBarHeight)
 
-                controlsPanel
+                    controlsPanel
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
             }
             .padding(Self.windowPadding)
             .frame(maxWidth: .infinity)
             .frame(minHeight: windowSize.height, alignment: .top)
+            .animation(.easeInOut(duration: 0.18), value: isControlsBarCollapsed)
         }
     }
 
@@ -462,11 +472,49 @@ struct ContentView: View {
         .frame(height: Self.controlsPanelHeight, alignment: .top)
     }
 
+    private var functionKeyMappingBar: some View {
+        HStack(spacing: 10) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(functionKeys.configuration.slots) { slot in
+                        FunctionKeySummaryPill(slot: slot)
+                            .frame(width: 128)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .frame(maxHeight: .infinity)
+            }
+            .scrollIndicators(.hidden)
+
+            Button {
+                toggleControlsBar()
+            } label: {
+                Image(systemName: "chevron.up")
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Show controls")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay {
+            Capsule()
+                .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+        }
+    }
+
     private func previewHeight(for windowSize: CGSize) -> CGFloat {
+        let bottomChromeHeight = isControlsBarCollapsed
+            ? Self.functionKeyMappingBarHeight
+            : Self.tabBarHeight + Self.controlsPanelHeight
+        let bottomChromeSpacing = isControlsBarCollapsed
+            ? Self.verticalSpacing
+            : Self.verticalSpacing * 2
         let chromeHeight = Self.windowPadding * 2
-            + Self.verticalSpacing * 2
-            + Self.tabBarHeight
-            + Self.controlsPanelHeight
+            + bottomChromeSpacing
+            + bottomChromeHeight
         let availableHeight = windowSize.height - chromeHeight
         let availableWidth = max(0, windowSize.width - Self.windowPadding * 2)
         let maximumAspectHeight = availableWidth * 9.0 / 16.0
@@ -1586,6 +1634,12 @@ struct ContentView: View {
         return action.needsWindowBackground && !pipeline.hasWindowBackgroundSelection
     }
 
+    private func toggleControlsBar() {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isControlsBarCollapsed.toggle()
+        }
+    }
+
     private func toggleWindowControl(for option: WindowBackgroundOption) {
         if windowControl.isActive {
             windowControl.deactivate()
@@ -1726,6 +1780,8 @@ struct ContentView: View {
             pipeline.toggleNtscEffect()
         case .toggleTranscription:
             speechToText.isSpeechToTextEnabled.toggle()
+        case .toggleControlsBar:
+            toggleControlsBar()
         }
     }
 
