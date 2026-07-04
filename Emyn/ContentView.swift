@@ -49,6 +49,8 @@ struct ContentView: View {
     private static let verticalSpacing: CGFloat = 16
     private static let tabBarHeight: CGFloat = 58
     private static let controlsPanelHeight: CGFloat = 220
+    private static let controlsPanelHorizontalPadding: CGFloat = 22
+    private static let controlsPanelVerticalPadding: CGFloat = 18
     private static let previewMinimumHeight: CGFloat = 180
     private static let notesSidebarWidth: CGFloat = 360
     private static let notesMinimumWindowWidth = minimumWindowWidth + notesSidebarWidth + windowPadding
@@ -359,9 +361,11 @@ struct ContentView: View {
         LiquidGlassSurface(cornerRadius: Self.windowCornerRadius) {
             ScrollView([.vertical, .horizontal]) {
                 tabContent
-                    .padding(22)
+                    .padding(.horizontal, Self.controlsPanelHorizontalPadding)
+                    .padding(.vertical, Self.controlsPanelVerticalPadding)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .id(selectedTab)
         }
         .frame(height: Self.controlsPanelHeight)
     }
