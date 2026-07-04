@@ -11,6 +11,7 @@ import SwiftUI
 struct EmynApp: App {
     @StateObject private var pipeline = CameraPipeline()
     @StateObject private var speechToText = SpeechToTextConfiguration()
+    @StateObject private var speechModelCatalog = SpeechToTextModelCatalog()
     @StateObject private var speechModelDownloader = SpeechToTextModelDownloader()
     @StateObject private var speechMicrophoneMonitor = SpeechToTextMicrophoneMonitor()
     @StateObject private var speechTranscriber = SpeechToTextTranscriber()
@@ -28,6 +29,7 @@ struct EmynApp: App {
             EmynSettingsView(
                 pipeline: pipeline,
                 speechToText: speechToText,
+                speechModelCatalog: speechModelCatalog,
                 speechModelDownloader: speechModelDownloader,
                 speechMicrophoneMonitor: speechMicrophoneMonitor,
                 speechTranscriber: speechTranscriber

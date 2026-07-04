@@ -18,11 +18,25 @@ struct SpeechToTextModelDescriptor: Identifiable, Hashable {
     let byteSize: Int64
 
     var downloadURL: URL {
-        URL(string: "https://huggingface.co/\(repository)/resolve/main/\(filename)")!
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "huggingface.co"
+        components.path = "/\(repository)/resolve/main/\(filename)"
+        return components.url!
     }
 
     var sizeTitle: String {
         ByteCountFormatter.string(fromByteCount: byteSize, countStyle: .file)
+    }
+
+    var localFilename: String {
+        if Self.builtIn.contains(where: { $0.repository == repository && $0.filename == filename }) {
+            return filename.replacingOccurrences(of: "/", with: "__")
+        }
+
+        let sanitizedRepository = repository.replacingOccurrences(of: "/", with: "__")
+        let sanitizedFilename = filename.replacingOccurrences(of: "/", with: "__")
+        return "\(sanitizedRepository)__\(sanitizedFilename)"
     }
 
     static let builtIn: [SpeechToTextModelDescriptor] = [
@@ -76,8 +90,69 @@ struct SpeechToTextModelDescriptor: Identifiable, Hashable {
         )
     ]
 
-    static func descriptor(for id: String) -> SpeechToTextModelDescriptor {
-        builtIn.first { $0.id == id } ?? builtIn[0]
+    static func descriptor(
+        for id: String,
+        in availableModels: [SpeechToTextModelDescriptor] = builtIn
+    ) -> SpeechToTextModelDescriptor {
+        availableModels.first { $0.id == id }
+            ?? builtIn.first { $0.id == id }
+            ?? builtIn[0]
+    }
+
+    static func catalogDescriptor(
+        repository: String,
+        filename: String,
+        byteSize: Int64
+    ) -> SpeechToTextModelDescriptor? {
+        guard filename.hasSuffix(".gguf") else { return nil }
+
+        return SpeechToTextModelDescriptor(
+            id: legacyID(repository: repository, filename: filename)
+                ?? "\(repository)/\(filename)",
+            title: catalogTitle(repository: repository, filename: filename),
+            detail: catalogDetail(repository: repository, filename: filename),
+            repository: repository,
+            filename: filename,
+            byteSize: byteSize
+        )
+    }
+
+    private static func legacyID(repository: String, filename: String) -> String? {
+        let key = "\(repository)|\(filename)"
+        let legacyIDs = Dictionary(
+            uniqueKeysWithValues: builtIn.map { ("\($0.repository)|\($0.filename)", $0.id) }
+        )
+        return legacyIDs[key]
+    }
+
+    private static func catalogTitle(repository: String, filename: String) -> String {
+        let repositoryName = repository.split(separator: "/").last.map(String.init) ?? repository
+        let baseName = filename.replacingOccurrences(of: ".gguf", with: "")
+        let quantization = quantizationName(from: baseName)
+        let modelName = repositoryName
+            .replacingOccurrences(of: "-gguf", with: "")
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: ".en", with: " EN")
+            .capitalized
+
+        guard let quantization else { return modelName }
+        return "\(modelName) \(quantization)"
+    }
+
+    private static func catalogDetail(repository: String, filename: String) -> String {
+        let family = repository
+            .split(separator: "/")
+            .last
+            .map(String.init)?
+            .replacingOccurrences(of: "-gguf", with: "")
+            ?? repository
+        let quantization = quantizationName(from: filename) ?? "GGUF"
+        return "\(family) \(quantization) model from the transcribe.cpp catalog."
+    }
+
+    private static func quantizationName(from text: String) -> String? {
+        let knownQuantizations = ["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "F16", "F32"]
+        return knownQuantizations.first { text.contains($0) }
     }
 }
 
@@ -269,6 +344,8 @@ struct SpeechToTextCaptionRenderConfiguration: Equatable {
 
 @MainActor
 final class SpeechToTextConfiguration: ObservableObject {
+    @Published private(set) var availableModels = SpeechToTextModelDescriptor.builtIn
+
     @Published var isSpeechToTextEnabled: Bool {
         didSet { defaults.set(isSpeechToTextEnabled, forKey: Key.enabled) }
     }
@@ -316,7 +393,7 @@ final class SpeechToTextConfiguration: ObservableObject {
     private let defaults: UserDefaults
 
     var selectedModel: SpeechToTextModelDescriptor {
-        SpeechToTextModelDescriptor.descriptor(for: selectedModelID)
+        SpeechToTextModelDescriptor.descriptor(for: selectedModelID, in: availableModels)
     }
 
     var selectedModelLocalURL: URL {
@@ -351,8 +428,7 @@ final class SpeechToTextConfiguration: ObservableObject {
         isSpeechToTextEnabled = defaults.object(forKey: Key.enabled) as? Bool ?? false
 
         let storedModelID = defaults.string(forKey: Key.selectedModelID)
-        if let storedModelID,
-           SpeechToTextModelDescriptor.builtIn.contains(where: { $0.id == storedModelID }) {
+        if let storedModelID, !storedModelID.isEmpty {
             selectedModelID = storedModelID
         } else {
             selectedModelID = SpeechToTextModelDescriptor.builtIn[0].id
@@ -375,6 +451,16 @@ final class SpeechToTextConfiguration: ObservableObject {
         areCaptionsAffectedByNTSC = defaults.object(forKey: Key.captionsAffectedByNTSC) as? Bool ?? false
     }
 
+    func replaceAvailableModels(_ models: [SpeechToTextModelDescriptor]) {
+        let nextModels = models.isEmpty ? SpeechToTextModelDescriptor.builtIn : models
+        availableModels = nextModels
+
+        guard nextModels.contains(where: { $0.id == selectedModelID }) else {
+            selectedModelID = nextModels[0].id
+            return
+        }
+    }
+
     func localModelPathForBackend() -> String? {
         let url = selectedModelLocalURL
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -391,7 +477,7 @@ final class SpeechToTextConfiguration: ObservableObject {
     }
 
     nonisolated static func localModelURL(for model: SpeechToTextModelDescriptor) -> URL {
-        modelsDirectory().appendingPathComponent(model.filename, isDirectory: false)
+        modelsDirectory().appendingPathComponent(model.localFilename, isDirectory: false)
     }
 
     nonisolated static func isModelDownloaded(_ model: SpeechToTextModelDescriptor) -> Bool {
@@ -436,6 +522,188 @@ final class SpeechToTextConfiguration: ObservableObject {
         static let captionPadding = "speechToText.captionPadding.v1"
         static let captionAlignment = "speechToText.captionAlignment.v1"
         static let captionsAffectedByNTSC = "speechToText.captionsAffectedByNTSC.v1"
+    }
+}
+
+@MainActor
+final class SpeechToTextModelCatalog: ObservableObject {
+    @Published private(set) var isRefreshing = false
+    @Published private(set) var statusText = "Using bundled model catalog."
+
+    private var hasLoadedRemoteCatalog = false
+
+    func refreshIfNeeded(configuration: SpeechToTextConfiguration) {
+        guard !hasLoadedRemoteCatalog else { return }
+        refresh(configuration: configuration)
+    }
+
+    func refresh(configuration: SpeechToTextConfiguration) {
+        guard !isRefreshing else { return }
+
+        isRefreshing = true
+        statusText = "Loading transcribe.cpp model catalog..."
+
+        Task {
+            do {
+                let models = try await Self.fetchCatalog()
+                configuration.replaceAvailableModels(models)
+                hasLoadedRemoteCatalog = true
+                statusText = "Loaded \(models.count) model variants from Hugging Face."
+            } catch {
+                statusText = "Using bundled catalog: \(error.localizedDescription)"
+            }
+
+            isRefreshing = false
+        }
+    }
+
+    nonisolated private static func fetchCatalog() async throws -> [SpeechToTextModelDescriptor] {
+        let summaries: [HuggingFaceModelSummary] = try await fetchJSON(from: catalogURL)
+        let repositories = summaries.compactMap(\.repositoryID)
+
+        var modelsByIndex = Array(repeating: [SpeechToTextModelDescriptor](), count: repositories.count)
+        var firstError: Error?
+
+        await withTaskGroup(of: (Int, Result<[SpeechToTextModelDescriptor], Error>).self) { group in
+            for (index, repository) in repositories.enumerated() {
+                group.addTask {
+                    do {
+                        let models = try await fetchRepositoryModels(repository: repository)
+                        return (index, .success(models))
+                    } catch {
+                        return (index, .failure(error))
+                    }
+                }
+            }
+
+            for await (index, result) in group {
+                switch result {
+                case .success(let models):
+                    modelsByIndex[index] = models
+                case .failure(let error):
+                    if firstError == nil {
+                        firstError = error
+                    }
+                }
+            }
+        }
+
+        var seenModelIDs = Set<String>()
+        let models = modelsByIndex
+            .flatMap { $0 }
+            .filter { seenModelIDs.insert($0.id).inserted }
+
+        guard !models.isEmpty else {
+            throw firstError ?? CatalogError.noModels
+        }
+
+        return models
+    }
+
+    nonisolated private static func fetchRepositoryModels(
+        repository: String
+    ) async throws -> [SpeechToTextModelDescriptor] {
+        let detail: HuggingFaceModelDetail = try await fetchJSON(from: detailURL(for: repository))
+        let resolvedRepository = detail.repositoryID ?? repository
+
+        return detail.siblings
+            .compactMap { sibling -> SpeechToTextModelDescriptor? in
+                guard let byteSize = sibling.byteSize else { return nil }
+                return SpeechToTextModelDescriptor.catalogDescriptor(
+                    repository: resolvedRepository,
+                    filename: sibling.rfilename,
+                    byteSize: byteSize
+                )
+            }
+    }
+
+    nonisolated private static func fetchJSON<Value: Decodable>(from url: URL) async throws -> Value {
+        var request = URLRequest(url: url)
+        request.setValue("Emyn", forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CatalogError.invalidResponse(url)
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw CatalogError.httpStatus(httpResponse.statusCode, url)
+        }
+
+        return try JSONDecoder().decode(Value.self, from: data)
+    }
+
+    nonisolated private static var catalogURL: URL {
+        URL(string: "https://huggingface.co/api/models?author=handy-computer&filter=transcribe.cpp&sort=downloads&direction=-1&limit=200")!
+    }
+
+    nonisolated private static func detailURL(for repository: String) -> URL {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "huggingface.co"
+        components.path = "/api/models/\(repository)"
+        components.queryItems = [URLQueryItem(name: "blobs", value: "true")]
+        return components.url!
+    }
+
+    private struct HuggingFaceModelSummary: Decodable {
+        let id: String?
+        let modelId: String?
+
+        var repositoryID: String? {
+            Self.normalizedRepositoryID(modelId ?? id)
+        }
+
+        private static func normalizedRepositoryID(_ value: String?) -> String? {
+            guard let value, value.contains("/") else { return nil }
+            return value.replacingOccurrences(of: "https://huggingface.co/", with: "")
+        }
+    }
+
+    private struct HuggingFaceModelDetail: Decodable {
+        let id: String?
+        let modelId: String?
+        let siblings: [HuggingFaceSibling]
+
+        var repositoryID: String? {
+            Self.normalizedRepositoryID(modelId ?? id)
+        }
+
+        private static func normalizedRepositoryID(_ value: String?) -> String? {
+            guard let value, value.contains("/") else { return nil }
+            return value.replacingOccurrences(of: "https://huggingface.co/", with: "")
+        }
+    }
+
+    private struct HuggingFaceSibling: Decodable {
+        let rfilename: String
+        let size: Int64?
+        let lfs: HuggingFaceLFS?
+
+        var byteSize: Int64? {
+            lfs?.size ?? size
+        }
+    }
+
+    private struct HuggingFaceLFS: Decodable {
+        let size: Int64?
+    }
+
+    private enum CatalogError: LocalizedError {
+        case invalidResponse(URL)
+        case httpStatus(Int, URL)
+        case noModels
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidResponse(let url):
+                return "Invalid response from \(url.host ?? url.absoluteString)."
+            case .httpStatus(let statusCode, let url):
+                return "\(url.host ?? url.absoluteString) returned HTTP \(statusCode)."
+            case .noModels:
+                return "No GGUF models were found."
+            }
+        }
     }
 }
 

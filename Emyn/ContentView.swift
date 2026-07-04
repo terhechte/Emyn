@@ -169,6 +169,9 @@ struct ContentView: View {
         .onChange(of: speechToText.selectedModelID) { _, _ in
             updateSpeechTranscription()
         }
+        .onChange(of: speechToText.availableModels) { _, _ in
+            updateSpeechTranscription()
+        }
         .onChange(of: speechToText.selectedMicrophoneID) { _, _ in
             updateSpeechTranscription()
         }
@@ -1920,6 +1923,7 @@ private struct SpeechToTextCaptionOverlay: View {
 struct EmynSettingsView: View {
     @ObservedObject var pipeline: CameraPipeline
     @ObservedObject var speechToText: SpeechToTextConfiguration
+    @ObservedObject var speechModelCatalog: SpeechToTextModelCatalog
     @ObservedObject var speechModelDownloader: SpeechToTextModelDownloader
     @ObservedObject var speechMicrophoneMonitor: SpeechToTextMicrophoneMonitor
     @ObservedObject var speechTranscriber: SpeechToTextTranscriber
@@ -1944,6 +1948,7 @@ struct EmynSettingsView: View {
 
             SpeechModelSettingsView(
                 configuration: speechToText,
+                catalog: speechModelCatalog,
                 downloader: speechModelDownloader,
                 transcriber: speechTranscriber
             )
@@ -2036,6 +2041,7 @@ private struct SpeechSoundSettingsView: View {
 
 private struct SpeechModelSettingsView: View {
     @ObservedObject var configuration: SpeechToTextConfiguration
+    @ObservedObject var catalog: SpeechToTextModelCatalog
     @ObservedObject var downloader: SpeechToTextModelDownloader
     @ObservedObject var transcriber: SpeechToTextTranscriber
 
@@ -2046,9 +2052,22 @@ private struct SpeechModelSettingsView: View {
 
             Form {
                 Picker("Model", selection: $configuration.selectedModelID) {
-                    ForEach(SpeechToTextModelDescriptor.builtIn) { model in
+                    ForEach(configuration.availableModels) { model in
                         Text("\(model.title) (\(model.sizeTitle))")
                             .tag(model.id)
+                    }
+                }
+
+                LabeledContent("Catalog") {
+                    HStack(spacing: 8) {
+                        SettingsStatusLine(text: catalog.statusText)
+
+                        Button {
+                            catalog.refresh(configuration: configuration)
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                        .disabled(catalog.isRefreshing)
                     }
                 }
 
@@ -2097,9 +2116,13 @@ private struct SpeechModelSettingsView: View {
         .padding(24)
         .frame(width: 460)
         .onAppear {
+            catalog.refreshIfNeeded(configuration: configuration)
             transcriber.loadModelIfAvailable(configuration.selectedModel)
         }
         .onChange(of: configuration.selectedModelID) { _, _ in
+            transcriber.loadModelIfAvailable(configuration.selectedModel)
+        }
+        .onChange(of: configuration.availableModels) { _, _ in
             transcriber.loadModelIfAvailable(configuration.selectedModel)
         }
         .onChange(of: downloader.statusText) { _, _ in
