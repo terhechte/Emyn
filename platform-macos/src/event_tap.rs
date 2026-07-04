@@ -124,9 +124,6 @@ const FIELD_KEYCODE: u32 = 9;
 // CGEventField: kCGMouseEventClickState / kCGMouseEventButtonNumber
 const FIELD_MOUSE_CLICK_STATE: u32 = 1;
 const FIELD_MOUSE_BUTTON: u32 = 3;
-// CGEventField: kCGMouseEventDeltaX / kCGMouseEventDeltaY
-const FIELD_MOUSE_DELTA_X: u32 = 4;
-const FIELD_MOUSE_DELTA_Y: u32 = 5;
 
 // macOS virtual key codes for Option keys
 const VK_OPTION: i64 = 58;
@@ -323,42 +320,30 @@ unsafe extern "C" fn tap_callback(
 
 unsafe fn update_virtual_cursor(
     state: &TapState,
-    event_type: u32,
+    _event_type: u32,
     event: *mut c_void,
 ) -> (f64, f64) {
+    // The event location is the hidden system cursor's position, which the
+    // window server moves with the user's normal pointer speed/acceleration.
+    // The kCGMouseEventDelta fields carry raw unaccelerated HID counts, so
+    // deriving movement from them makes the virtual cursor track the mouse's
+    // hardware CPI instead of the system pointer speed.
     let raw_loc = CGEventGetLocation(event);
-    let view_min_x = state.view_x;
-    let view_max_x = state.view_x + state.view_w;
-    let view_min_y = state.view_y;
-    let view_max_y = state.view_y + state.view_h;
 
     let mut cursor = state.virtual_cursor.lock().unwrap_or_else(|e| e.into_inner());
+    clamp_virtual_cursor_to_view(
+        &mut cursor,
+        raw_loc.x,
+        raw_loc.y,
+        state.view_x,
+        state.view_y,
+        state.view_w,
+        state.view_h,
+    );
 
-    if matches!(
-        event_type,
-        EV_MOUSE_MOVED | EV_LEFT_MOUSE_DRAGGED | EV_RIGHT_MOUSE_DRAGGED | EV_OTHER_MOUSE_DRAGGED
-    ) {
-        let delta_x = CGEventGetIntegerValueField(event, FIELD_MOUSE_DELTA_X) as f64;
-        let delta_y = CGEventGetIntegerValueField(event, FIELD_MOUSE_DELTA_Y) as f64;
-        apply_virtual_cursor_delta(
-            &mut cursor,
-            delta_x,
-            delta_y,
-            state.view_x,
-            state.view_y,
-            state.view_w,
-            state.view_h,
-        );
-    } else if !(view_min_x..=view_max_x).contains(&cursor.x)
-        || !(view_min_y..=view_max_y).contains(&cursor.y)
-    {
-        cursor.x = raw_loc.x.clamp(view_min_x, view_max_x);
-        cursor.y = raw_loc.y.clamp(view_min_y, view_max_y);
-    }
-
-    // Keep the hidden system cursor close to the virtual cursor. Movement is
-    // driven by per-event deltas above, so off-edge physical travel is discarded
-    // immediately and reversing direction responds on the next delta.
+    // Pull the hidden system cursor back whenever it strays outside the view,
+    // so off-edge physical travel is discarded immediately and reversing
+    // direction responds on the next event.
     if (raw_loc.x - cursor.x).abs() > 0.5 || (raw_loc.y - cursor.y).abs() > 0.5 {
         CGWarpMouseCursorPosition(cursor.x, cursor.y);
     }
@@ -366,17 +351,17 @@ unsafe fn update_virtual_cursor(
     (cursor.x, cursor.y)
 }
 
-fn apply_virtual_cursor_delta(
+fn clamp_virtual_cursor_to_view(
     cursor: &mut RawPoint,
-    delta_x: f64,
-    delta_y: f64,
+    x: f64,
+    y: f64,
     view_x: f64,
     view_y: f64,
     view_w: f64,
     view_h: f64,
 ) {
-    cursor.x = (cursor.x + delta_x).clamp(view_x, view_x + view_w);
-    cursor.y = (cursor.y + delta_y).clamp(view_y, view_y + view_h);
+    cursor.x = x.clamp(view_x, view_x + view_w);
+    cursor.y = y.clamp(view_y, view_y + view_h);
 }
 
 fn log_incoming_key_event(state: &TapState, event_type: u32, keycode: i64, flags: u64) {
@@ -809,6 +794,9 @@ impl EventTapSession {
             CFRunLoopAddSource(CFRunLoopGetMain(), run_loop_source, common_modes);
             CGEventTapEnable(tap_port, true);
             CGDisplayHideCursor(CGMainDisplayID());
+            // Start the hidden system cursor at the view centre so it agrees
+            // with the virtual cursor's initial position.
+            CGWarpMouseCursorPosition(view_x + view_w * 0.5, view_y + view_h * 0.5);
         }
 
         Ok(EventTapSession {
@@ -850,25 +838,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn virtual_cursor_moves_immediately_after_saturating_left_edge() {
+    fn virtual_cursor_tracks_location_inside_view() {
         let mut cursor = RawPoint { x: 50.0, y: 50.0 };
 
-        for _ in 0..600 {
-            apply_virtual_cursor_delta(&mut cursor, -10.0, 0.0, 0.0, 0.0, 100.0, 100.0);
-        }
+        clamp_virtual_cursor_to_view(&mut cursor, 30.0, 70.0, 0.0, 0.0, 100.0, 100.0);
 
-        assert_eq!(cursor.x, 0.0);
-
-        apply_virtual_cursor_delta(&mut cursor, 1.0, 0.0, 0.0, 0.0, 100.0, 100.0);
-
-        assert_eq!(cursor.x, 1.0);
+        assert_eq!(cursor.x, 30.0);
+        assert_eq!(cursor.y, 70.0);
     }
 
     #[test]
     fn virtual_cursor_clamps_each_axis_independently() {
         let mut cursor = RawPoint { x: 50.0, y: 50.0 };
 
-        apply_virtual_cursor_delta(&mut cursor, 75.0, -75.0, 0.0, 0.0, 100.0, 100.0);
+        clamp_virtual_cursor_to_view(&mut cursor, 125.0, -25.0, 0.0, 0.0, 100.0, 100.0);
 
         assert_eq!(cursor.x, 100.0);
         assert_eq!(cursor.y, 0.0);
