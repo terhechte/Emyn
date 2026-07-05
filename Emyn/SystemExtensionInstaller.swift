@@ -2,41 +2,128 @@ import Combine
 import Foundation
 import SystemExtensions
 
+enum SystemExtensionInstallationState: Equatable {
+    case notInstalled
+    case installing
+    case awaitingApproval
+    case installed
+    case requiresReboot
+    case requestCompleted
+    case removing
+    case failed(String)
+}
+
+private enum SystemExtensionRequestKind {
+    case activation
+    case deactivation
+}
+
 final class SystemExtensionInstaller: NSObject, ObservableObject {
     @Published private(set) var statusText = "Virtual camera not installed"
     @Published private(set) var needsUserApproval = false
+    @Published private(set) var installationState: SystemExtensionInstallationState = .notInstalled
 
     private let requestQueue = DispatchQueue(label: "com.stylemac.Emyn.system-extension")
+    private let requestStateLock = NSLock()
+    private var requestKinds: [ObjectIdentifier: SystemExtensionRequestKind] = [:]
+    private var isActivationRequestInFlight = false
+    private var isDeactivationRequestInFlight = false
+
+    override init() {
+        super.init()
+
+        if StartupPermissionDefaults.wasVirtualCameraInstalled {
+            statusText = "Virtual camera installed"
+            installationState = .installed
+        }
+    }
 
     func activate() {
+        guard !isActivationRequestInFlight else { return }
+        isActivationRequestInFlight = true
+        StartupPermissionDefaults.setVirtualCameraInstallRequested(true)
         needsUserApproval = false
         statusText = "Installing virtual camera"
+        installationState = .installing
 
         let request = OSSystemExtensionRequest.activationRequest(
             forExtensionWithIdentifier: SharedFrameConfiguration.systemExtensionBundleIdentifier,
             queue: requestQueue
         )
         request.delegate = self
+        register(request, kind: .activation)
         OSSystemExtensionManager.shared.submitRequest(request)
     }
 
     func deactivate() {
+        guard !isDeactivationRequestInFlight else { return }
+        isDeactivationRequestInFlight = true
         needsUserApproval = false
         statusText = "Removing virtual camera"
+        installationState = .removing
+        StartupPermissionDefaults.setVirtualCameraInstalled(false)
 
         let request = OSSystemExtensionRequest.deactivationRequest(
             forExtensionWithIdentifier: SharedFrameConfiguration.systemExtensionBundleIdentifier,
             queue: requestQueue
         )
         request.delegate = self
+        register(request, kind: .deactivation)
         OSSystemExtensionManager.shared.submitRequest(request)
     }
 
-    private func update(status: String, needsApproval: Bool = false) {
+    func noteVirtualCameraAvailable() {
+        guard installationState != .installed else { return }
+
+        StartupPermissionDefaults.setVirtualCameraInstallRequested(true)
+        StartupPermissionDefaults.setVirtualCameraInstalled(true)
+        needsUserApproval = false
+        statusText = "Virtual camera installed"
+        installationState = .installed
+    }
+
+    private func update(
+        status: String,
+        needsApproval: Bool = false,
+        state: SystemExtensionInstallationState? = nil
+    ) {
         DispatchQueue.main.async {
             self.statusText = status
             self.needsUserApproval = needsApproval
+            if let state {
+                self.installationState = state
+            }
         }
+    }
+
+    private func markActivationFinished() {
+        DispatchQueue.main.async {
+            self.isActivationRequestInFlight = false
+        }
+    }
+
+    private func markDeactivationFinished() {
+        DispatchQueue.main.async {
+            self.isDeactivationRequestInFlight = false
+        }
+    }
+
+    private func register(_ request: OSSystemExtensionRequest, kind: SystemExtensionRequestKind) {
+        requestStateLock.lock()
+        requestKinds[ObjectIdentifier(request)] = kind
+        requestStateLock.unlock()
+    }
+
+    private func kind(for request: OSSystemExtensionRequest) -> SystemExtensionRequestKind {
+        requestStateLock.lock()
+        defer { requestStateLock.unlock() }
+        return requestKinds[ObjectIdentifier(request)] ?? .activation
+    }
+
+    private func consumeKind(for request: OSSystemExtensionRequest) -> SystemExtensionRequestKind {
+        requestStateLock.lock()
+        defer { requestStateLock.unlock() }
+        return requestKinds.removeValue(forKey: ObjectIdentifier(request)) ?? .activation
     }
 }
 
@@ -50,24 +137,61 @@ extension SystemExtensionInstaller: OSSystemExtensionRequestDelegate {
     }
 
     func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
-        update(status: "Approve the virtual camera in System Settings", needsApproval: true)
+        guard kind(for: request) == .activation else { return }
+        markActivationFinished()
+        update(
+            status: "Approve the virtual camera in System Settings",
+            needsApproval: true,
+            state: .awaitingApproval
+        )
     }
 
     func request(
         _ request: OSSystemExtensionRequest,
         didFinishWithResult result: OSSystemExtensionRequest.Result
     ) {
+        let kind = consumeKind(for: request)
+
         switch result {
         case .completed:
-            update(status: "Virtual camera installed")
+            switch kind {
+            case .activation:
+                markActivationFinished()
+                StartupPermissionDefaults.setVirtualCameraInstalled(true)
+                update(status: "Virtual camera installed", state: .installed)
+            case .deactivation:
+                markDeactivationFinished()
+                StartupPermissionDefaults.setVirtualCameraInstallRequested(false)
+                StartupPermissionDefaults.setVirtualCameraInstalled(false)
+                update(status: "Virtual camera removed", state: .notInstalled)
+            }
         case .willCompleteAfterReboot:
-            update(status: "Virtual camera will finish after restart")
+            switch kind {
+            case .activation:
+                markActivationFinished()
+                StartupPermissionDefaults.setVirtualCameraInstalled(true)
+                update(status: "Virtual camera will finish after restart", state: .requiresReboot)
+            case .deactivation:
+                markDeactivationFinished()
+                StartupPermissionDefaults.setVirtualCameraInstallRequested(false)
+                StartupPermissionDefaults.setVirtualCameraInstalled(false)
+                update(status: "Virtual camera removal will finish after restart", state: .requiresReboot)
+            }
         @unknown default:
-            update(status: "Virtual camera request completed")
+            markActivationFinished()
+            markDeactivationFinished()
+            update(status: "Virtual camera request completed", state: .requestCompleted)
         }
     }
 
     func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
-        update(status: error.localizedDescription)
+        let kind = consumeKind(for: request)
+        switch kind {
+        case .activation:
+            markActivationFinished()
+        case .deactivation:
+            markDeactivationFinished()
+        }
+        update(status: error.localizedDescription, state: .failed(error.localizedDescription))
     }
 }

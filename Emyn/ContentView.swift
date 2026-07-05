@@ -47,6 +47,7 @@ private enum ControlTab: String, CaseIterable, Identifiable {
 
 private enum SettingsTab: String {
     case background
+    case virtualCamera
     case sound
     case models
 }
@@ -79,7 +80,8 @@ struct ContentView: View {
     }()
 
     @ObservedObject private var pipeline: CameraPipeline
-    @StateObject private var extensionInstaller = SystemExtensionInstaller()
+    @ObservedObject private var extensionInstaller: SystemExtensionInstaller
+    @StateObject private var startupPermissions = StartupPermissionCoordinator()
     @StateObject private var windowBackgroundPicker = WindowBackgroundPickerModel()
     @StateObject private var windowControl = WindowControlCoordinator()
     @StateObject private var functionKeys = FunctionKeyController()
@@ -92,6 +94,7 @@ struct ContentView: View {
     @State private var isWindowBackgroundPickerPresented = false
     @State private var isFunctionKeyConfigurationPresented = false
     @State private var previewNSView: SampleBufferPreviewView?
+    @State private var didStartRuntime = false
     @State private var cursorAttentionScale: Double?
     @State private var cursorAttentionTask: Task<Void, Never>?
     @State private var isSoftwareCursorPreviewVisible = false
@@ -106,10 +109,12 @@ struct ContentView: View {
 
     init(
         pipeline: CameraPipeline,
+        extensionInstaller: SystemExtensionInstaller,
         speechToText: SpeechToTextConfiguration,
         speechTranscriber: SpeechToTextTranscriber
     ) {
         self.pipeline = pipeline
+        self.extensionInstaller = extensionInstaller
         self.speechToText = speechToText
         self.speechTranscriber = speechTranscriber
     }
@@ -146,23 +151,12 @@ struct ContentView: View {
         .frame(minWidth: isPresentationNotesSidebarVisible ? minimumWindowWidthWithNotes : Self.minimumWindowWidth, minHeight: 460)
         .background(windowBackground)
         .onAppear {
-            pipeline.refreshCameras()
-            pipeline.start()
-            updateSpeechTranscription()
-            refreshSpeechCaptionOverlay()
-            functionKeys.onTrigger = handleFunctionKeyTrigger(_:)
-            functionKeys.startMonitoring()
+            startupPermissions.beginStartup(with: extensionInstaller) {
+                startRuntimeIfNeeded()
+            }
         }
         .onDisappear {
-            cursorAttentionTask?.cancel()
-            cursorPreviewTask?.cancel()
-            isSoftwareCursorPreviewVisible = false
-            functionKeys.stopMonitoring()
-            speechTranscriber.stopTranscribing(clearText: true)
-            pipeline.setSpeechCaptionOverlay(text: nil, configuration: speechToText.captionRenderConfiguration)
-            windowControl.deactivate()
-            pipeline.stop()
-            pipeline.clearWindowBackground()
+            stopRuntime()
         }
         .onChange(of: speechToText.isSpeechToTextEnabled) { _, _ in
             updateSpeechTranscription()
@@ -209,6 +203,14 @@ struct ContentView: View {
                 pipeline.setWindowZoomCenter(cursor)
             }
         }
+        .onChange(of: extensionInstaller.installationState) { _, newValue in
+            startupPermissions.handleInstallerState(newValue, installer: extensionInstaller)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            startupPermissions.beginStartup(with: extensionInstaller) {
+                startRuntimeIfNeeded()
+            }
+        }
         .sheet(isPresented: $isWindowBackgroundPickerPresented) {
             WindowBackgroundPickerView(
                 model: windowBackgroundPicker,
@@ -230,6 +232,18 @@ struct ContentView: View {
                     isFunctionKeyConfigurationPresented = false
                 }
             )
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { startupPermissions.isWizardPresented },
+                set: { _ in }
+            )
+        ) {
+            StartupPermissionWizardView(
+                coordinator: startupPermissions,
+                installer: extensionInstaller
+            )
+            .interactiveDismissDisabled()
         }
     }
 
@@ -289,6 +303,26 @@ struct ContentView: View {
         )
 
         return session.devices.first { $0.uniqueID == speechToText.selectedMicrophoneID }
+    }
+
+    private var shouldShowVirtualCameraToolbarWarning: Bool {
+        switch extensionInstaller.installationState {
+        case .notInstalled, .awaitingApproval, .failed:
+            return true
+        case .installing, .installed, .requiresReboot, .requestCompleted, .removing:
+            return false
+        }
+    }
+
+    private var virtualCameraToolbarStatusColor: Color {
+        switch extensionInstaller.installationState {
+        case .awaitingApproval:
+            return .orange
+        case .failed, .notInstalled:
+            return .red
+        case .installing, .installed, .requiresReboot, .requestCompleted, .removing:
+            return .secondary
+        }
     }
 
     private func settingsTabLink<Label: View>(
@@ -604,28 +638,21 @@ struct ContentView: View {
                 }
             }
 
-            panelDivider
+            if shouldShowVirtualCameraToolbarWarning {
+                panelDivider
 
-            controlSection("Virtual Camera", systemImage: "video.badge.plus") {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 8) {
-                        Button {
-                            extensionInstaller.activate()
-                        } label: {
-                            Label("Install", systemImage: "video.badge.plus")
-                        }
+                controlSection("Virtual Camera", systemImage: "exclamationmark.video") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        statusLine(
+                            extensionInstaller.statusText,
+                            color: virtualCameraToolbarStatusColor
+                        )
 
-                        Button {
-                            extensionInstaller.deactivate()
-                        } label: {
-                            Label("Remove", systemImage: "video.badge.minus")
+                        settingsTabLink(tab: .virtualCamera) {
+                            Label("Open Preferences", systemImage: "gearshape")
                         }
+                        .controlSize(.small)
                     }
-
-                    statusLine(
-                        extensionInstaller.statusText,
-                        color: extensionInstaller.needsUserApproval ? .orange : .secondary
-                    )
                 }
             }
         }
@@ -1619,11 +1646,38 @@ struct ContentView: View {
     }
 
     private func updateSpeechTranscription() {
+        guard didStartRuntime else { return }
+
         speechTranscriber.apply(
             model: speechToText.selectedModel,
             microphoneID: speechToText.selectedMicrophoneID,
             isEnabled: speechToText.isSpeechToTextEnabled
         )
+    }
+
+    private func startRuntimeIfNeeded() {
+        guard !didStartRuntime else { return }
+
+        didStartRuntime = true
+        pipeline.refreshCameras()
+        pipeline.start()
+        updateSpeechTranscription()
+        refreshSpeechCaptionOverlay()
+        functionKeys.onTrigger = handleFunctionKeyTrigger(_:)
+        functionKeys.startMonitoring()
+    }
+
+    private func stopRuntime() {
+        didStartRuntime = false
+        cursorAttentionTask?.cancel()
+        cursorPreviewTask?.cancel()
+        isSoftwareCursorPreviewVisible = false
+        functionKeys.stopMonitoring()
+        speechTranscriber.stopTranscribing(clearText: true)
+        pipeline.setSpeechCaptionOverlay(text: nil, configuration: speechToText.captionRenderConfiguration)
+        windowControl.deactivate()
+        pipeline.stop()
+        pipeline.clearWindowBackground()
     }
 
     private func isFunctionKeyActionDisabled(_ action: FunctionKeyAction) -> Bool {
@@ -1978,6 +2032,7 @@ private struct SpeechToTextCaptionOverlay: View {
 
 struct EmynSettingsView: View {
     @ObservedObject var pipeline: CameraPipeline
+    @ObservedObject var extensionInstaller: SystemExtensionInstaller
     @ObservedObject var speechToText: SpeechToTextConfiguration
     @ObservedObject var speechModelCatalog: SpeechToTextModelCatalog
     @ObservedObject var speechModelDownloader: SpeechToTextModelDownloader
@@ -1992,6 +2047,12 @@ struct EmynSettingsView: View {
                     Label("Background", systemImage: "person.crop.rectangle")
                 }
                 .tag(SettingsTab.background)
+
+            VirtualCameraSettingsView(installer: extensionInstaller)
+                .tabItem {
+                    Label("Virtual Camera", systemImage: "video.badge.plus")
+                }
+                .tag(SettingsTab.virtualCamera)
 
             SpeechSoundSettingsView(
                 configuration: speechToText,
@@ -2014,6 +2075,68 @@ struct EmynSettingsView: View {
             .tag(SettingsTab.models)
         }
         .frame(width: 520, height: 460)
+    }
+}
+
+private struct VirtualCameraSettingsView: View {
+    @ObservedObject var installer: SystemExtensionInstaller
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("Virtual Camera", systemImage: "video.badge.plus")
+                .font(.title3.weight(.semibold))
+
+            Form {
+                LabeledContent("Status") {
+                    SettingsStatusLine(text: installer.statusText)
+                }
+
+                LabeledContent("Install") {
+                    HStack(spacing: 8) {
+                        Button {
+                            installer.activate()
+                        } label: {
+                            Label("Install", systemImage: "video.badge.plus")
+                        }
+                        .disabled(isInstallDisabled)
+
+                        Button {
+                            installer.deactivate()
+                        } label: {
+                            Label("Remove", systemImage: "video.badge.minus")
+                        }
+                        .disabled(isRemoveDisabled)
+                    }
+                }
+
+                if installer.needsUserApproval {
+                    LabeledContent("Approval") {
+                        SettingsStatusLine(text: "Approve the virtual camera in System Settings, then return to Emyn.")
+                    }
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .padding(24)
+        .frame(width: 460)
+    }
+
+    private var isInstallDisabled: Bool {
+        switch installer.installationState {
+        case .installing, .installed, .requiresReboot:
+            return true
+        case .notInstalled, .awaitingApproval, .requestCompleted, .removing, .failed:
+            return false
+        }
+    }
+
+    private var isRemoveDisabled: Bool {
+        switch installer.installationState {
+        case .notInstalled, .installing, .removing:
+            return true
+        case .awaitingApproval, .installed, .requiresReboot, .requestCompleted, .failed:
+            return false
+        }
     }
 }
 
@@ -2293,6 +2416,7 @@ struct BackgroundRemovalSettingsView: View {
 #Preview {
     ContentView(
         pipeline: CameraPipeline(),
+        extensionInstaller: SystemExtensionInstaller(),
         speechToText: SpeechToTextConfiguration(),
         speechTranscriber: SpeechToTextTranscriber()
     )
