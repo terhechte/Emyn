@@ -75,6 +75,14 @@ The performance core can be tested through Swift Package Manager:
 swift test
 ```
 
+## Testing
+
+To reset the permission system:
+
+```
+tccutil reset ScreenCapture com.stylemac.Emyn
+```
+
 ## License
 
 Emyn is available under the MIT License. See [LICENSE](LICENSE).
