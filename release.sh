@@ -24,6 +24,7 @@ NOTARY_PROFILE="${NOTARY_KEYCHAIN_PROFILE:-my-signer}"
 BUILD_ONLY=false
 CLEAN=true
 BUILD_XCFRAMEWORK=true
+ENSURE_TRANSCRIBE_CPP=true
 SIGNING_MODE="${SIGNING_MODE:-developer-id}"
 
 usage() {
@@ -41,6 +42,8 @@ Options:
                       Use this for a local /Applications install on registered Macs.
   --no-clean          Reuse the existing release DerivedData.
   --skip-xcframework  Do not rebuild platform-macos' UniFFI XCFramework first.
+  --skip-transcribe-cpp
+                      Do not generate the local TranscribeCpp XCFramework first.
   -h, --help          Show this help.
 
 Environment overrides:
@@ -59,6 +62,8 @@ Environment overrides:
   APP_PROVISIONING_PROFILE        Passed through to sign.sh
   SYSTEM_EXTENSION_PROVISIONING_PROFILE
                                   Passed through to sign.sh
+  TRANSCRIBE_CPP_VERSION          Release tag for TranscribeCpp, defaults to latest
+  UPDATE_TRANSCRIBE_CPP           Set true to refresh even if the XCFramework exists
 EOF
 }
 
@@ -89,6 +94,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-xcframework)
       BUILD_XCFRAMEWORK=false
+      shift
+      ;;
+    --skip-transcribe-cpp)
+      ENSURE_TRANSCRIBE_CPP=false
       shift
       ;;
     -h|--help)
@@ -233,6 +242,13 @@ cd "$SCRIPT_DIR"
 if [[ "$BUILD_XCFRAMEWORK" == true ]]; then
   echo "==> Building platform-macos XCFramework"
   "$SCRIPT_DIR/platform-macos/scripts/build-xcframework.sh"
+fi
+
+if [[ "$ENSURE_TRANSCRIBE_CPP" == true ]]; then
+  TRANSCRIBE_CPP_XCFRAMEWORK="$SCRIPT_DIR/transcribe-cpp-swift/TranscribeCpp.xcframework"
+  if [[ ! -d "$TRANSCRIBE_CPP_XCFRAMEWORK" || "${UPDATE_TRANSCRIBE_CPP:-false}" == true ]]; then
+    "$SCRIPT_DIR/transcribe-cpp-swift/scripts/update-xcframework.sh" "${TRANSCRIBE_CPP_VERSION:-latest}"
+  fi
 fi
 
 if [[ "$CLEAN" == true ]]; then

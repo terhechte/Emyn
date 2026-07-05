@@ -43,6 +43,20 @@ The app uses camera, microphone, screen recording, accessibility, input monitori
 - `EmynPerformanceTests/` - Swift package tests for performance-sensitive sizing and render gate logic.
 - `tools/` - Development harnesses.
 
+## Updating transcribe cpp
+
+For Xcode Product > Archive from a fresh checkout, run this once first:
+
+```sh
+./transcribe-cpp-swift/scripts/update-xcframework.sh
+```
+
+To pin a version:
+
+```sh
+./transcribe-cpp-swift/scripts/update-xcframework.sh v0.1.1
+```
+
 ## Building
 
 Open `Emyn.xcodeproj` in Xcode and build the `Emyn` scheme.

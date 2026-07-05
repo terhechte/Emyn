@@ -2,3 +2,6 @@
 
 # Generated PlatformMacOSKit binary artifact
 /platform-macos/swift/PlatformMacOSKit/platform_macosFFI.xcframework/
+
+# Generated TranscribeCpp binary artifact
+/transcribe-cpp-swift/TranscribeCpp.xcframework/
