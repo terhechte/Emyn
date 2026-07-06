@@ -190,7 +190,6 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
     private func configureVideoOutput(for frameSize: OutputFrameSize) {
         outputFrameSize = frameSize
         fallbackPhase = 0
-        lastGoodPixelBuffer = nil
 
         CMVideoFormatDescriptionCreate(
             allocator: kCFAllocatorDefault,
@@ -219,9 +218,7 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
     }
 
     private func copyPixelBuffer(from sourcePixelBuffer: CVPixelBuffer, to destinationPixelBuffer: CVPixelBuffer) -> Bool {
-        guard CVPixelBufferGetPixelFormatType(sourcePixelBuffer) == CVPixelBufferGetPixelFormatType(destinationPixelBuffer),
-              CVPixelBufferGetWidth(sourcePixelBuffer) == CVPixelBufferGetWidth(destinationPixelBuffer),
-              CVPixelBufferGetHeight(sourcePixelBuffer) == CVPixelBufferGetHeight(destinationPixelBuffer) else {
+        guard CVPixelBufferGetPixelFormatType(sourcePixelBuffer) == CVPixelBufferGetPixelFormatType(destinationPixelBuffer) else {
             return false
         }
 
@@ -237,20 +234,70 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
             return false
         }
 
+        let sourceWidth = CVPixelBufferGetWidth(sourcePixelBuffer)
+        let sourceHeight = CVPixelBufferGetHeight(sourcePixelBuffer)
+        let destinationWidth = CVPixelBufferGetWidth(destinationPixelBuffer)
+        let destinationHeight = CVPixelBufferGetHeight(destinationPixelBuffer)
         let height = CVPixelBufferGetHeight(sourcePixelBuffer)
         let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(sourcePixelBuffer)
         let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(destinationPixelBuffer)
-        let copyBytesPerRow = min(sourceBytesPerRow, destinationBytesPerRow)
 
-        for row in 0..<height {
-            memcpy(
-                destinationBaseAddress.advanced(by: row * destinationBytesPerRow),
-                sourceBaseAddress.advanced(by: row * sourceBytesPerRow),
-                copyBytesPerRow
-            )
+        if sourceWidth == destinationWidth, sourceHeight == destinationHeight {
+            let copyBytesPerRow = min(sourceBytesPerRow, destinationBytesPerRow)
+
+            for row in 0..<height {
+                memcpy(
+                    destinationBaseAddress.advanced(by: row * destinationBytesPerRow),
+                    sourceBaseAddress.advanced(by: row * sourceBytesPerRow),
+                    copyBytesPerRow
+                )
+            }
+
+            return true
         }
 
+        scalePixelBuffer(
+            from: sourceBaseAddress,
+            sourceWidth: sourceWidth,
+            sourceHeight: sourceHeight,
+            sourceBytesPerRow: sourceBytesPerRow,
+            to: destinationBaseAddress,
+            destinationWidth: destinationWidth,
+            destinationHeight: destinationHeight,
+            destinationBytesPerRow: destinationBytesPerRow
+        )
+
         return true
+    }
+
+    private func scalePixelBuffer(
+        from sourceBaseAddress: UnsafeMutableRawPointer,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        sourceBytesPerRow: Int,
+        to destinationBaseAddress: UnsafeMutableRawPointer,
+        destinationWidth: Int,
+        destinationHeight: Int,
+        destinationBytesPerRow: Int
+    ) {
+        guard sourceWidth > 0, sourceHeight > 0, destinationWidth > 0, destinationHeight > 0 else {
+            return
+        }
+
+        for y in 0..<destinationHeight {
+            let sourceY = min(sourceHeight - 1, y * sourceHeight / destinationHeight)
+            let sourceRow = sourceBaseAddress
+                .advanced(by: sourceY * sourceBytesPerRow)
+                .assumingMemoryBound(to: UInt32.self)
+            let destinationRow = destinationBaseAddress
+                .advanced(by: y * destinationBytesPerRow)
+                .assumingMemoryBound(to: UInt32.self)
+
+            for x in 0..<destinationWidth {
+                let sourceX = min(sourceWidth - 1, x * sourceWidth / destinationWidth)
+                destinationRow[x] = sourceRow[sourceX]
+            }
+        }
     }
 
     private static func makeStreamFormat(for frameSize: OutputFrameSize) -> CMIOExtensionStreamFormat {

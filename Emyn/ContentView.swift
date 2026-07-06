@@ -2150,6 +2150,14 @@ private struct VirtualCameraSettingsView: View {
                         .disabled(isInstallDisabled)
 
                         Button {
+                            installer.reinstall()
+                        } label: {
+                            Label("Update", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                        .disabled(isUpdateDisabled)
+                        .help("Reinstall the virtual camera so it picks up the version bundled with this app")
+
+                        Button {
                             installer.deactivate()
                         } label: {
                             Label("Remove", systemImage: "video.badge.minus")
@@ -2180,6 +2188,15 @@ private struct VirtualCameraSettingsView: View {
     }
 
     private var isRemoveDisabled: Bool {
+        switch installer.installationState {
+        case .notInstalled, .installing, .removing:
+            return true
+        case .awaitingApproval, .installed, .requiresReboot, .requestCompleted, .failed:
+            return false
+        }
+    }
+
+    private var isUpdateDisabled: Bool {
         switch installer.installationState {
         case .notInstalled, .installing, .removing:
             return true

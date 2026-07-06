@@ -382,7 +382,7 @@ final class SharedFrameReader {
             }
 
             let metadata = readMetadata()
-            guard metadataIsValid(metadata, for: pixelBuffer) else {
+            guard metadataIsReadable(metadata) else {
                 waitBeforeRetry(attempt)
                 continue
             }
@@ -394,16 +394,17 @@ final class SharedFrameReader {
             }
 
             let sourceBaseAddress = mappedFile.pointer.advanced(by: SharedFrameConfiguration.headerByteCount)
+            let destinationWidth = CVPixelBufferGetWidth(pixelBuffer)
+            let destinationHeight = CVPixelBufferGetHeight(pixelBuffer)
             let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-            let copyBytesPerRow = min(destinationBytesPerRow, metadata.bytesPerRow)
-
-            for row in 0..<metadata.height {
-                memcpy(
-                    destinationBaseAddress.advanced(by: row * destinationBytesPerRow),
-                    sourceBaseAddress.advanced(by: row * metadata.bytesPerRow),
-                    copyBytesPerRow
-                )
-            }
+            copyFrame(
+                metadata,
+                from: sourceBaseAddress,
+                to: destinationBaseAddress,
+                destinationWidth: destinationWidth,
+                destinationHeight: destinationHeight,
+                destinationBytesPerRow: destinationBytesPerRow
+            )
 
             CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
 
@@ -421,6 +422,66 @@ final class SharedFrameReader {
         return nil
     }
 
+    private func copyFrame(
+        _ metadata: Metadata,
+        from sourceBaseAddress: UnsafeMutableRawPointer,
+        to destinationBaseAddress: UnsafeMutableRawPointer,
+        destinationWidth: Int,
+        destinationHeight: Int,
+        destinationBytesPerRow: Int
+    ) {
+        if metadata.width == destinationWidth, metadata.height == destinationHeight {
+            let copyBytesPerRow = min(destinationBytesPerRow, metadata.bytesPerRow)
+
+            for row in 0..<metadata.height {
+                memcpy(
+                    destinationBaseAddress.advanced(by: row * destinationBytesPerRow),
+                    sourceBaseAddress.advanced(by: row * metadata.bytesPerRow),
+                    copyBytesPerRow
+                )
+            }
+
+            return
+        }
+
+        scaleFrame(
+            metadata,
+            from: sourceBaseAddress,
+            to: destinationBaseAddress,
+            destinationWidth: destinationWidth,
+            destinationHeight: destinationHeight,
+            destinationBytesPerRow: destinationBytesPerRow
+        )
+    }
+
+    private func scaleFrame(
+        _ metadata: Metadata,
+        from sourceBaseAddress: UnsafeMutableRawPointer,
+        to destinationBaseAddress: UnsafeMutableRawPointer,
+        destinationWidth: Int,
+        destinationHeight: Int,
+        destinationBytesPerRow: Int
+    ) {
+        guard metadata.width > 0, metadata.height > 0, destinationWidth > 0, destinationHeight > 0 else {
+            return
+        }
+
+        for y in 0..<destinationHeight {
+            let sourceY = min(metadata.height - 1, y * metadata.height / destinationHeight)
+            let sourceRow = sourceBaseAddress
+                .advanced(by: sourceY * metadata.bytesPerRow)
+                .assumingMemoryBound(to: UInt32.self)
+            let destinationRow = destinationBaseAddress
+                .advanced(by: y * destinationBytesPerRow)
+                .assumingMemoryBound(to: UInt32.self)
+
+            for x in 0..<destinationWidth {
+                let sourceX = min(metadata.width - 1, x * metadata.width / destinationWidth)
+                destinationRow[x] = sourceRow[sourceX]
+            }
+        }
+    }
+
     private func waitBeforeRetry(_ attempt: Int) {
         guard attempt + 1 < Self.copyRetryCount else { return }
         usleep(Self.retryDelayMicroseconds)
@@ -436,7 +497,7 @@ final class SharedFrameReader {
         )
     }
 
-    private func metadataIsValid(_ metadata: Metadata, for pixelBuffer: CVPixelBuffer) -> Bool {
+    private func metadataIsReadable(_ metadata: Metadata) -> Bool {
         guard readUInt32(at: Offset.magic) == SharedFrameConfiguration.magic,
               readUInt32(at: Offset.version) == SharedFrameConfiguration.version,
               OutputFrameSize(width: metadata.width, height: metadata.height) != nil,
@@ -447,8 +508,7 @@ final class SharedFrameReader {
             return false
         }
 
-        return CVPixelBufferGetWidth(pixelBuffer) == metadata.width
-            && CVPixelBufferGetHeight(pixelBuffer) == metadata.height
+        return true
     }
 
     private func readUInt32(at offset: Int) -> UInt32 {

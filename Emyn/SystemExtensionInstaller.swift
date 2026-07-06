@@ -28,6 +28,7 @@ final class SystemExtensionInstaller: NSObject, ObservableObject {
     private var requestKinds: [ObjectIdentifier: SystemExtensionRequestKind] = [:]
     private var isActivationRequestInFlight = false
     private var isDeactivationRequestInFlight = false
+    private var shouldActivateAfterDeactivation = false
 
     override init() {
         super.init()
@@ -53,6 +54,14 @@ final class SystemExtensionInstaller: NSObject, ObservableObject {
         request.delegate = self
         register(request, kind: .activation)
         OSSystemExtensionManager.shared.submitRequest(request)
+    }
+
+    // macOS only replaces an installed system extension when the bundle version
+    // changes, so a same-version rebuild needs an explicit remove + install cycle.
+    func reinstall() {
+        guard !isActivationRequestInFlight, !isDeactivationRequestInFlight else { return }
+        shouldActivateAfterDeactivation = true
+        deactivate()
     }
 
     func deactivate() {
@@ -105,6 +114,14 @@ final class SystemExtensionInstaller: NSObject, ObservableObject {
     private func markDeactivationFinished() {
         DispatchQueue.main.async {
             self.isDeactivationRequestInFlight = false
+        }
+    }
+
+    private func continueReinstallIfNeeded() {
+        DispatchQueue.main.async {
+            guard self.shouldActivateAfterDeactivation else { return }
+            self.shouldActivateAfterDeactivation = false
+            self.activate()
         }
     }
 
@@ -164,6 +181,7 @@ extension SystemExtensionInstaller: OSSystemExtensionRequestDelegate {
                 StartupPermissionDefaults.setVirtualCameraInstallRequested(false)
                 StartupPermissionDefaults.setVirtualCameraInstalled(false)
                 update(status: "Virtual camera removed", state: .notInstalled)
+                continueReinstallIfNeeded()
             }
         case .willCompleteAfterReboot:
             switch kind {
@@ -176,6 +194,7 @@ extension SystemExtensionInstaller: OSSystemExtensionRequestDelegate {
                 StartupPermissionDefaults.setVirtualCameraInstallRequested(false)
                 StartupPermissionDefaults.setVirtualCameraInstalled(false)
                 update(status: "Virtual camera removal will finish after restart", state: .requiresReboot)
+                continueReinstallIfNeeded()
             }
         @unknown default:
             markActivationFinished()
@@ -193,5 +212,10 @@ extension SystemExtensionInstaller: OSSystemExtensionRequestDelegate {
             markDeactivationFinished()
         }
         update(status: error.localizedDescription, state: .failed(error.localizedDescription))
+        if kind == .deactivation {
+            // Removing may fail when no extension is installed; a pending
+            // reinstall should still attempt the fresh activation.
+            continueReinstallIfNeeded()
+        }
     }
 }
