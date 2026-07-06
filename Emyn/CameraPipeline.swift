@@ -823,6 +823,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     private var latestBackgroundMediaVideoImage: CIImage?
     private var backgroundMediaLoopObserver: NSObjectProtocol?
     private var imageOverlayCache: [String: CIImage] = [:]
+    private var outputFrameSizeObserverTimer: DispatchSourceTimer?
 
     override init() {
         if let metalDevice = MTLCreateSystemDefaultDevice() {
@@ -867,12 +868,14 @@ final class CameraPipeline: NSObject, ObservableObject {
         outputFormatDescriptionSize = outputSize
 
         refreshCameras()
+        startOutputFrameSizeObserver()
         if frameWriter == nil {
             statusText = "Shared frame output unavailable"
         }
     }
 
     deinit {
+        outputFrameSizeObserverTimer?.cancel()
         clearBackgroundMediaResources()
     }
 
@@ -888,6 +891,22 @@ final class CameraPipeline: NSObject, ObservableObject {
                 self.selectedCameraID = infos.first?.id ?? ""
             }
         }
+    }
+
+    private func startOutputFrameSizeObserver() {
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + .milliseconds(250), repeating: .milliseconds(250), leeway: .milliseconds(100))
+        timer.setEventHandler { [weak self] in
+            self?.syncOutputFrameSizeFromSharedDefaults()
+        }
+        timer.resume()
+        outputFrameSizeObserverTimer = timer
+    }
+
+    private func syncOutputFrameSizeFromSharedDefaults() {
+        let sharedOutputFrameSize = SharedFrameConfiguration.synchronizedOutputFrameSize()
+        guard outputFrameSize != sharedOutputFrameSize else { return }
+        outputFrameSize = sharedOutputFrameSize
     }
 
     func start() {

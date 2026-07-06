@@ -1,5 +1,6 @@
 import CoreMediaIO
 import CoreVideo
+import Darwin
 import Foundation
 import IOKit.audio
 import os.log
@@ -28,6 +29,7 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
     private var bufferPool: CVPixelBufferPool!
     private let bufferAuxAttributes: NSDictionary = [kCVPixelBufferPoolAllocationThresholdKey: 6]
     private var frameReader: SharedFrameReader?
+    private var lastGoodPixelBuffer: CVPixelBuffer?
     private var fallbackPhase = 0
     private var outputFrameSize = SharedFrameConfiguration.outputFrameSize
 
@@ -134,7 +136,9 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
             frameReader = try? SharedFrameReader()
         }
 
-        if frameReader?.copyLatestFrame(to: pixelBuffer) == nil {
+        if frameReader?.copyLatestFrame(to: pixelBuffer) != nil {
+            lastGoodPixelBuffer = pixelBuffer
+        } else if !copyLastGoodFrame(to: pixelBuffer) {
             drawFallbackFrame(into: pixelBuffer)
         }
 
@@ -186,6 +190,7 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
     private func configureVideoOutput(for frameSize: OutputFrameSize) {
         outputFrameSize = frameSize
         fallbackPhase = 0
+        lastGoodPixelBuffer = nil
 
         CMVideoFormatDescriptionCreate(
             allocator: kCFAllocatorDefault,
@@ -203,6 +208,49 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
             kCVPixelBufferIOSurfacePropertiesKey: [:] as NSDictionary
         ]
         CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, pixelBufferAttributes, &bufferPool)
+    }
+
+    private func copyLastGoodFrame(to pixelBuffer: CVPixelBuffer) -> Bool {
+        guard let lastGoodPixelBuffer else {
+            return false
+        }
+
+        return copyPixelBuffer(from: lastGoodPixelBuffer, to: pixelBuffer)
+    }
+
+    private func copyPixelBuffer(from sourcePixelBuffer: CVPixelBuffer, to destinationPixelBuffer: CVPixelBuffer) -> Bool {
+        guard CVPixelBufferGetPixelFormatType(sourcePixelBuffer) == CVPixelBufferGetPixelFormatType(destinationPixelBuffer),
+              CVPixelBufferGetWidth(sourcePixelBuffer) == CVPixelBufferGetWidth(destinationPixelBuffer),
+              CVPixelBufferGetHeight(sourcePixelBuffer) == CVPixelBufferGetHeight(destinationPixelBuffer) else {
+            return false
+        }
+
+        CVPixelBufferLockBaseAddress(sourcePixelBuffer, .readOnly)
+        CVPixelBufferLockBaseAddress(destinationPixelBuffer, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(destinationPixelBuffer, [])
+            CVPixelBufferUnlockBaseAddress(sourcePixelBuffer, .readOnly)
+        }
+
+        guard let sourceBaseAddress = CVPixelBufferGetBaseAddress(sourcePixelBuffer),
+              let destinationBaseAddress = CVPixelBufferGetBaseAddress(destinationPixelBuffer) else {
+            return false
+        }
+
+        let height = CVPixelBufferGetHeight(sourcePixelBuffer)
+        let sourceBytesPerRow = CVPixelBufferGetBytesPerRow(sourcePixelBuffer)
+        let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(destinationPixelBuffer)
+        let copyBytesPerRow = min(sourceBytesPerRow, destinationBytesPerRow)
+
+        for row in 0..<height {
+            memcpy(
+                destinationBaseAddress.advanced(by: row * destinationBytesPerRow),
+                sourceBaseAddress.advanced(by: row * sourceBytesPerRow),
+                copyBytesPerRow
+            )
+        }
+
+        return true
     }
 
     private static func makeStreamFormat(for frameSize: OutputFrameSize) -> CMIOExtensionStreamFormat {

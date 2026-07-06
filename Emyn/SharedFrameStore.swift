@@ -81,17 +81,19 @@ enum SharedFrameConfiguration {
 
     static var outputFrameSize: OutputFrameSize {
         get {
-            guard let rawValue = sharedDefaults.string(forKey: outputFrameSizeDefaultsKey),
-                  let size = OutputFrameSize(rawValue: rawValue) else {
-                return defaultOutputFrameSize
-            }
-
-            return size
+            outputFrameSize(from: sharedDefaults)
         }
         set {
-            sharedDefaults.set(newValue.rawValue, forKey: outputFrameSizeDefaultsKey)
-            _ = sharedDefaults.synchronize()
+            let defaults = sharedDefaults
+            defaults.set(newValue.rawValue, forKey: outputFrameSizeDefaultsKey)
+            _ = defaults.synchronize()
         }
+    }
+
+    static func synchronizedOutputFrameSize() -> OutputFrameSize {
+        let defaults = sharedDefaults
+        _ = defaults.synchronize()
+        return outputFrameSize(from: defaults)
     }
 
     static var width: Int {
@@ -120,6 +122,15 @@ enum SharedFrameConfiguration {
 
     private static var sharedDefaults: UserDefaults {
         UserDefaults(suiteName: appGroupIdentifier) ?? .standard
+    }
+
+    private static func outputFrameSize(from defaults: UserDefaults) -> OutputFrameSize {
+        guard let rawValue = defaults.string(forKey: outputFrameSizeDefaultsKey),
+              let size = OutputFrameSize(rawValue: rawValue) else {
+            return defaultOutputFrameSize
+        }
+
+        return size
     }
 }
 
@@ -343,6 +354,8 @@ final class SharedFrameReader {
     }
 
     private let mappedFile: SharedFrameMappedFile
+    private static let copyRetryCount = 6
+    private static let retryDelayMicroseconds: useconds_t = 500
 
     private struct Metadata {
         var width: Int
@@ -361,13 +374,17 @@ final class SharedFrameReader {
             return nil
         }
 
-        for _ in 0..<3 {
+        for attempt in 0..<Self.copyRetryCount {
             let sequenceBeforeCopy = readUInt64(at: Offset.sequence)
+            guard sequenceBeforeCopy > 0, sequenceBeforeCopy.isMultiple(of: 2) else {
+                waitBeforeRetry(attempt)
+                continue
+            }
+
             let metadata = readMetadata()
-            guard sequenceBeforeCopy > 0,
-                  sequenceBeforeCopy.isMultiple(of: 2),
-                  metadataIsValid(metadata, for: pixelBuffer) else {
-                return nil
+            guard metadataIsValid(metadata, for: pixelBuffer) else {
+                waitBeforeRetry(attempt)
+                continue
             }
 
             CVPixelBufferLockBaseAddress(pixelBuffer, [])
@@ -397,9 +414,16 @@ final class SharedFrameReader {
                     timestampNanoseconds: readUInt64(at: Offset.timestampNanoseconds)
                 )
             }
+
+            waitBeforeRetry(attempt)
         }
 
         return nil
+    }
+
+    private func waitBeforeRetry(_ attempt: Int) {
+        guard attempt + 1 < Self.copyRetryCount else { return }
+        usleep(Self.retryDelayMicroseconds)
     }
 
     private func readMetadata() -> Metadata {
