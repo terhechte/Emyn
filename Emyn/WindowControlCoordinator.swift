@@ -5,6 +5,20 @@ import Darwin
 import PlatformMacOSKit
 import ScreenCaptureKit
 
+enum WindowControlKeyPress {
+    case leftArrow
+    case rightArrow
+    case space
+
+    fileprivate var keyCode: CGKeyCode {
+        switch self {
+        case .leftArrow: return 123
+        case .rightArrow: return 124
+        case .space: return 49
+        }
+    }
+}
+
 @MainActor
 final class WindowControlCoordinator: ObservableObject {
     @Published private(set) var isActive = false
@@ -115,6 +129,17 @@ final class WindowControlCoordinator: ObservableObject {
 
     func setExcludeFunctionKeys(_ exclude: Bool) {
         session?.excludeFunctionKeys = exclude
+    }
+
+    func pressKey(_ key: WindowControlKeyPress) {
+        guard isActive, let session else { return }
+
+        do {
+            try session.forwardKey(keyCode: key.keyCode, keyDown: true)
+            try session.forwardKey(keyCode: key.keyCode, keyDown: false)
+        } catch {
+            statusText = "Key press failed: \(error.localizedDescription)"
+        }
     }
 
     private func finishDeactivation(status: String) {

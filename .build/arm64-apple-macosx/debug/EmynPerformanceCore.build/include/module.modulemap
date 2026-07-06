@@ -1,0 +1,3 @@
+module EmynPerformanceCore {
+    header "/Users/terhechte/Developer/Swift/Emyn/.build/arm64-apple-macosx/debug/EmynPerformanceCore.build/include/EmynPerformanceCore-Swift.h"
+}

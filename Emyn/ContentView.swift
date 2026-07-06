@@ -1885,6 +1885,12 @@ struct ContentView: View {
             speechToText.isSpeechToTextEnabled.toggle()
         case .toggleControlsBar:
             toggleControlsBar()
+        case .pressLeftArrow:
+            windowControl.pressKey(.leftArrow)
+        case .pressRightArrow:
+            windowControl.pressKey(.rightArrow)
+        case .pressSpace:
+            windowControl.pressKey(.space)
         }
     }
 

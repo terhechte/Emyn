@@ -56,13 +56,17 @@ public final class WindowCaptureSession {
         stopPolling()
     }
 
-    public func forwardKeyForTesting(keyCode: CGKeyCode, keyDown: Bool, flags: CGEventFlags = []) throws {
+    public func forwardKey(keyCode: CGKeyCode, keyDown: Bool, flags: CGEventFlags = []) throws {
         try session.forwardKeyForTesting(
             targetWindowId: targetWindowID,
             keycode: UInt16(keyCode),
             keyDown: keyDown,
             flags: flags.rawValue
         )
+    }
+
+    public func forwardKeyForTesting(keyCode: CGKeyCode, keyDown: Bool, flags: CGEventFlags = []) throws {
+        try forwardKey(keyCode: keyCode, keyDown: keyDown, flags: flags)
     }
 
     private func startPolling() {

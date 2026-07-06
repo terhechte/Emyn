@@ -77,6 +77,9 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
     case toggleNtscEffect
     case toggleTranscription
     case toggleControlsBar
+    case pressLeftArrow
+    case pressRightArrow
+    case pressSpace
 
     var id: String { rawValue }
 
@@ -94,6 +97,9 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         case .toggleNtscEffect: return "NTSC"
         case .toggleTranscription: return "Transcribe"
         case .toggleControlsBar: return "Controls Bar"
+        case .pressLeftArrow: return "Left Arrow"
+        case .pressRightArrow: return "Right Arrow"
+        case .pressSpace: return "Space"
         }
     }
 
@@ -111,6 +117,9 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         case .toggleNtscEffect: return "tv"
         case .toggleTranscription: return "waveform.and.mic"
         case .toggleControlsBar: return "rectangle.bottomthird.inset.filled"
+        case .pressLeftArrow: return "arrow.left"
+        case .pressRightArrow: return "arrow.right"
+        case .pressSpace: return "space"
         }
     }
 
@@ -125,7 +134,10 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
             .triggerConfetti,
             .toggleNtscEffect,
             .toggleTranscription,
-            .toggleControlsBar
+            .toggleControlsBar,
+            .pressLeftArrow,
+            .pressRightArrow,
+            .pressSpace
         ]
     }
 
@@ -133,7 +145,7 @@ enum FunctionKeyAction: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .toggleWindowBackground, .toggleWindowZoom, .toggleWindowAndPerson, .cycleWindowBackground:
             return true
-        case .none, .togglePersonPosition, .toggleImageOverlay, .drawAttentionToCursor, .triggerConfetti, .toggleNtscEffect, .toggleTranscription, .toggleControlsBar:
+        case .none, .togglePersonPosition, .toggleImageOverlay, .drawAttentionToCursor, .triggerConfetti, .toggleNtscEffect, .toggleTranscription, .toggleControlsBar, .pressLeftArrow, .pressRightArrow, .pressSpace:
             return false
         }
     }
