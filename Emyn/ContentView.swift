@@ -987,8 +987,8 @@ struct ContentView: View {
 
             panelDivider
 
-            controlSection("Test Functions", systemImage: "switch.2") {
-                functionKeyActionButtons
+            controlSection("Function Keys", systemImage: "keyboard") {
+                presentFunctionKeyActionButtons
             }
             .frame(minWidth: 300)
 
@@ -1421,6 +1421,55 @@ struct ContentView: View {
                 .controlSize(.small)
             }
         }
+    }
+
+    private var presentFunctionKeyActionButtons: some View {
+        let columns = [
+            GridItem(.flexible(), spacing: 6),
+            GridItem(.flexible(), spacing: 6)
+        ]
+        let slots = activeFunctionKeySlots
+
+        return Group {
+            if slots.isEmpty {
+                statusLine("No active function keys")
+            } else {
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+                    ForEach(slots) { slot in
+                        Button {
+                            functionKeys.reportManualAction(slot.action, sourceTitle: slot.key.title)
+                            performFunctionKeyAction(
+                                slot.action,
+                                identifier: slot.key.storageIdentifier,
+                                imagePath: slot.imagePath
+                            )
+                        } label: {
+                            Label("\(slot.key.title): \(slot.action.title)", systemImage: slot.action.systemImage)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.78)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(isFunctionKeyActionDisabled(slot.action))
+                    }
+                }
+            }
+        }
+    }
+
+    private var activeFunctionKeySlots: [FunctionKeySlot] {
+        functionKeys.configuration.slots.filter(isActiveFunctionKeySlot)
+    }
+
+    private func isActiveFunctionKeySlot(_ slot: FunctionKeySlot) -> Bool {
+        guard slot.action != .none else { return false }
+
+        if slot.action == .toggleImageOverlay {
+            return slot.imagePath != nil
+        }
+
+        return true
     }
 
     @ViewBuilder
