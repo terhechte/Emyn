@@ -1490,13 +1490,6 @@ final class CameraPipeline: NSObject, ObservableObject {
             outputExtent: outputExtent,
             at: renderTime
         )
-        renderedImage = applyOutputFlips(
-            to: renderedImage,
-            outputExtent: outputExtent,
-            horizontal: settings.outputFlipHorizontal,
-            vertical: settings.outputFlipVertical
-        )
-
         let hasSpeechCaption = hasSpeechCaption(settings)
         if hasSpeechCaption, settings.speechCaptionConfiguration.isAffectedByNTSC {
             renderedImage = applySpeechCaptionOverlay(
@@ -1505,6 +1498,12 @@ final class CameraPipeline: NSObject, ObservableObject {
                 settings: settings
             )
         }
+        renderedImage = applyOutputFlips(
+            to: renderedImage,
+            outputExtent: outputExtent,
+            horizontal: settings.outputFlipHorizontal,
+            vertical: settings.outputFlipVertical
+        )
 
         ciContext.render(
             renderedImage,
@@ -1955,7 +1954,9 @@ final class CameraPipeline: NSObject, ObservableObject {
         _ text: String,
         configuration: SpeechToTextCaptionRenderConfiguration,
         in context: CGContext,
-        outputExtent: CGRect
+        outputExtent: CGRect,
+        flipHorizontal: Bool = false,
+        flipVertical: Bool = false
     ) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
@@ -2022,7 +2023,23 @@ final class CameraPipeline: NSObject, ObservableObject {
         )
         let textRect = backgroundRect.insetBy(dx: padding, dy: padding)
 
+        context.saveGState()
+        defer { context.restoreGState() }
+
+        if flipHorizontal || flipVertical {
+            context.translateBy(
+                x: flipHorizontal ? outputWidth : 0,
+                y: flipVertical ? outputHeight : 0
+            )
+            context.scaleBy(
+                x: flipHorizontal ? -1 : 1,
+                y: flipVertical ? -1 : 1
+            )
+        }
+
         NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
         configuration.backgroundColor.nsColor.setFill()
         NSBezierPath(roundedRect: backgroundRect, xRadius: 8, yRadius: 8).fill()
@@ -2030,7 +2047,6 @@ final class CameraPipeline: NSObject, ObservableObject {
             with: textRect,
             options: [.usesLineFragmentOrigin, .usesFontLeading]
         )
-        NSGraphicsContext.restoreGraphicsState()
     }
 
     private func drawSpeechCaption(
@@ -2068,7 +2084,9 @@ final class CameraPipeline: NSObject, ObservableObject {
             settings.speechCaptionText ?? "",
             configuration: settings.speechCaptionConfiguration,
             in: context,
-            outputExtent: outputExtent
+            outputExtent: outputExtent,
+            flipHorizontal: settings.outputFlipHorizontal,
+            flipVertical: settings.outputFlipVertical
         )
     }
 

@@ -165,6 +165,12 @@ struct ContentView: View {
         .onChange(of: speechToText.selectedModelID) { _, _ in
             updateSpeechTranscription()
         }
+        .onChange(of: speechToText.isStreamingEnabled) { _, _ in
+            updateSpeechTranscription()
+        }
+        .onChange(of: speechToText.selectedQuantization) { _, _ in
+            updateSpeechTranscription()
+        }
         .onChange(of: speechToText.availableModels) { _, _ in
             updateSpeechTranscription()
         }
@@ -1700,7 +1706,8 @@ struct ContentView: View {
         speechTranscriber.apply(
             model: speechToText.selectedModel,
             microphoneID: speechToText.selectedMicrophoneID,
-            isEnabled: speechToText.isSpeechToTextEnabled
+            isEnabled: speechToText.isSpeechToTextEnabled,
+            usesStreaming: speechToText.isStreamingEnabled
         )
     }
 
@@ -2129,7 +2136,7 @@ struct EmynSettingsView: View {
             }
             .tag(SettingsTab.models)
         }
-        .frame(width: 520, height: 460)
+        .frame(width: 520, height: 500)
     }
 }
 
@@ -2302,12 +2309,24 @@ private struct SpeechModelSettingsView: View {
                 .font(.title3.weight(.semibold))
 
             Form {
+                Toggle("Streaming", isOn: $configuration.isStreamingEnabled)
+                    .toggleStyle(.switch)
+
+                Picker("Quantization", selection: $configuration.selectedQuantization) {
+                    ForEach(configuration.availableQuantizations, id: \.self) { quantization in
+                        Text(quantization)
+                            .tag(quantization)
+                    }
+                }
+                .disabled(configuration.availableQuantizations.isEmpty)
+
                 Picker("Model", selection: $configuration.selectedModelID) {
-                    ForEach(configuration.availableModels) { model in
+                    ForEach(configuration.filteredModels) { model in
                         Text("\(model.title) (\(model.sizeTitle))")
                             .tag(model.id)
                     }
                 }
+                .disabled(configuration.filteredModels.isEmpty)
 
                 LabeledContent("Catalog") {
                     HStack(spacing: 8) {
@@ -2371,6 +2390,12 @@ private struct SpeechModelSettingsView: View {
             transcriber.loadModelIfAvailable(configuration.selectedModel)
         }
         .onChange(of: configuration.selectedModelID) { _, _ in
+            transcriber.loadModelIfAvailable(configuration.selectedModel)
+        }
+        .onChange(of: configuration.isStreamingEnabled) { _, _ in
+            transcriber.loadModelIfAvailable(configuration.selectedModel)
+        }
+        .onChange(of: configuration.selectedQuantization) { _, _ in
             transcriber.loadModelIfAvailable(configuration.selectedModel)
         }
         .onChange(of: configuration.availableModels) { _, _ in

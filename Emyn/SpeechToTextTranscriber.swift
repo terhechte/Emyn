@@ -37,6 +37,7 @@ final class SpeechToTextTranscriber: ObservableObject {
     private var desiredModel: SpeechToTextModelDescriptor?
     private var desiredMicrophoneID = ""
     private var desiredTranscriptionEnabled = false
+    private var desiredStreamingEnabled = false
     private var loadedModelID: String?
     private var loadingModelID: String?
     private var loadGeneration = 0
@@ -50,34 +51,47 @@ final class SpeechToTextTranscriber: ObservableObject {
     #endif
 
     private var audioBuffer: [Float] = []
+    private var streamPendingSamples: [Float] = []
     private var isCaptureEnabledOnQueue = false
+    private var isStreamingModeOnQueue = false
     private var hasSpeechInBuffer = false
     private var silentSampleCount = 0
     private var lastPartialRunSampleCount = 0
     private var isRunInProgress = false
+    private var isStreamActive = false
 
     private let sampleRate = 16_000
     private let voiceThreshold: Float = 0.012
     private let trimThreshold: Float = 0.006
     private let minimumSpeechSamples = 8_000
     private let partialIntervalSamples = 32_000
+    private let streamFeedIntervalSamples = 1_280
     private let finalSilenceSamples = 11_200
     private let maximumBufferedSamples = 160_000
 
     func apply(
         model selectedModel: SpeechToTextModelDescriptor,
         microphoneID: String,
-        isEnabled: Bool
+        isEnabled: Bool,
+        usesStreaming: Bool
     ) {
         desiredModel = selectedModel
         desiredMicrophoneID = microphoneID
         desiredTranscriptionEnabled = isEnabled
+        desiredStreamingEnabled = usesStreaming
         advancePublicationGeneration()
 
         queue.async { [weak self] in
             guard let self else { return }
+            if self.isStreamingModeOnQueue != usesStreaming {
+                self.resetStreamingSession()
+                self.resetAudioBuffer()
+            }
+
             self.isCaptureEnabledOnQueue = isEnabled
+            self.isStreamingModeOnQueue = usesStreaming
             if !isEnabled {
+                self.resetStreamingSession()
                 self.resetAudioBuffer()
             }
         }
@@ -102,10 +116,8 @@ final class SpeechToTextTranscriber: ObservableObject {
         queue.async { [weak self] in
             guard let self else { return }
             self.isCaptureEnabledOnQueue = false
-            self.audioBuffer.removeAll(keepingCapacity: true)
-            self.hasSpeechInBuffer = false
-            self.silentSampleCount = 0
-            self.lastPartialRunSampleCount = 0
+            self.resetStreamingSession()
+            self.resetAudioBuffer()
             self.isRunInProgress = false
         }
 
@@ -260,32 +272,180 @@ final class SpeechToTextTranscriber: ObservableObject {
             let chunkLevel = Self.rmsLevel(samples)
             let hasVoice = chunkLevel > self.voiceThreshold
 
-            self.audioBuffer.append(contentsOf: samples)
-            if self.audioBuffer.count > self.maximumBufferedSamples {
-                self.audioBuffer.removeFirst(self.audioBuffer.count - self.maximumBufferedSamples)
-            }
-
-            if hasVoice {
-                self.hasSpeechInBuffer = true
-                self.silentSampleCount = 0
-            } else {
-                self.silentSampleCount += samples.count
-            }
-
-            guard self.hasSpeechInBuffer,
-                  self.audioBuffer.count >= self.minimumSpeechSamples else {
+            if self.isStreamingModeOnQueue {
+                self.enqueueStreamingAudio(samples, hasVoice: hasVoice)
                 return
             }
 
-            let shouldFinalize = self.silentSampleCount >= self.finalSilenceSamples
-            let shouldRunPartial = self.audioBuffer.count - self.lastPartialRunSampleCount >= self.partialIntervalSamples
+            self.enqueueOfflineAudio(samples, hasVoice: hasVoice)
+        }
+    }
 
-            if shouldFinalize {
-                self.runTranscription(final: true)
-            } else if shouldRunPartial {
-                self.runTranscription(final: false)
+    private func enqueueOfflineAudio(_ samples: [Float], hasVoice: Bool) {
+        audioBuffer.append(contentsOf: samples)
+        if audioBuffer.count > maximumBufferedSamples {
+            audioBuffer.removeFirst(audioBuffer.count - maximumBufferedSamples)
+        }
+
+        if hasVoice {
+            hasSpeechInBuffer = true
+            silentSampleCount = 0
+        } else {
+            silentSampleCount += samples.count
+        }
+
+        guard hasSpeechInBuffer,
+              audioBuffer.count >= minimumSpeechSamples else {
+            return
+        }
+
+        let shouldFinalize = silentSampleCount >= finalSilenceSamples
+        let shouldRunPartial = audioBuffer.count - lastPartialRunSampleCount >= partialIntervalSamples
+
+        if shouldFinalize {
+            runTranscription(final: true)
+        } else if shouldRunPartial {
+            runTranscription(final: false)
+        }
+    }
+
+    private func enqueueStreamingAudio(_ samples: [Float], hasVoice: Bool) {
+        if !hasSpeechInBuffer, !hasVoice {
+            return
+        }
+
+        if hasVoice {
+            hasSpeechInBuffer = true
+            silentSampleCount = 0
+        } else {
+            silentSampleCount += samples.count
+        }
+
+        guard hasSpeechInBuffer else { return }
+
+        let generation = currentPublicationGeneration()
+        streamPendingSamples.append(contentsOf: samples)
+        if streamPendingSamples.count > maximumBufferedSamples {
+            streamPendingSamples.removeFirst(streamPendingSamples.count - maximumBufferedSamples)
+        }
+
+        guard beginStreamingRunIfNeeded(generation: generation) else {
+            resetAudioBuffer()
+            return
+        }
+
+        while streamPendingSamples.count >= streamFeedIntervalSamples {
+            let chunk = Array(streamPendingSamples.prefix(streamFeedIntervalSamples))
+            streamPendingSamples.removeFirst(streamFeedIntervalSamples)
+            guard feedStreamingAudio(chunk, final: false, generation: generation) else {
+                resetAudioBuffer()
+                return
             }
         }
+
+        if silentSampleCount >= finalSilenceSamples {
+            if !streamPendingSamples.isEmpty {
+                let remainingSamples = streamPendingSamples
+                streamPendingSamples.removeAll(keepingCapacity: true)
+                guard feedStreamingAudio(remainingSamples, final: false, generation: generation) else {
+                    resetAudioBuffer()
+                    return
+                }
+            }
+
+            finalizeStreamingRun(generation: generation)
+            resetAudioBuffer()
+        }
+    }
+
+    private func beginStreamingRunIfNeeded(generation: Int) -> Bool {
+        #if canImport(CTranscribe)
+        guard !isStreamActive else { return true }
+        guard let session else { return false }
+
+        var runParams = transcribe_run_params()
+        transcribe_run_params_init(&runParams)
+
+        var streamParams = transcribe_stream_params()
+        transcribe_stream_params_init(&streamParams)
+
+        let status = transcribe_stream_begin(session, &runParams, &streamParams)
+        guard status == TRANSCRIBE_OK else {
+            publishStreamingStatus(
+                text: "",
+                status: "Streaming failed to start: \(Self.statusString(status))",
+                generation: generation
+            )
+            resetStreamingSession()
+            return false
+        }
+
+        isStreamActive = true
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    private func feedStreamingAudio(_ samples: [Float], final: Bool, generation: Int) -> Bool {
+        #if canImport(CTranscribe)
+        guard !samples.isEmpty, let session else { return true }
+
+        var update = transcribe_stream_update()
+        transcribe_stream_update_init(&update)
+
+        let status = samples.withUnsafeBufferPointer { buffer in
+            transcribe_stream_feed(session, buffer.baseAddress, Int32(buffer.count), &update)
+        }
+
+        guard status == TRANSCRIBE_OK else {
+            publishStreamingStatus(
+                text: currentStreamingText(),
+                status: "Streaming failed: \(Self.statusString(status))",
+                generation: generation
+            )
+            resetStreamingSession()
+            return false
+        }
+
+        if update.result_changed || update.committed_changed || update.tentative_changed {
+            publishStreamingStatus(
+                text: currentStreamingText(),
+                status: final ? "Transcribed speech." : "Streaming...",
+                generation: generation
+            )
+        }
+
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    private func finalizeStreamingRun(generation: Int) {
+        #if canImport(CTranscribe)
+        guard isStreamActive, let session else { return }
+
+        var update = transcribe_stream_update()
+        transcribe_stream_update_init(&update)
+
+        let status = transcribe_stream_finalize(session, &update)
+        let text = currentStreamingText()
+        let statusText = status == TRANSCRIBE_OK
+            ? "Transcribed speech."
+            : "Streaming finalize failed: \(Self.statusString(status))"
+
+        publishStreamingStatus(
+            text: text,
+            status: statusText,
+            generation: generation
+        )
+
+        isStreamActive = false
+        if status != TRANSCRIBE_OK {
+            resetStreamingSession()
+        }
+        #endif
     }
 
     private func runTranscription(final: Bool) {
@@ -357,6 +517,7 @@ final class SpeechToTextTranscriber: ObservableObject {
 
     private func resetAudioBuffer() {
         audioBuffer.removeAll(keepingCapacity: true)
+        streamPendingSamples.removeAll(keepingCapacity: true)
         hasSpeechInBuffer = false
         silentSampleCount = 0
         lastPartialRunSampleCount = 0
@@ -364,6 +525,8 @@ final class SpeechToTextTranscriber: ObservableObject {
 
     private func freeCurrentModel() {
         #if canImport(CTranscribe)
+        resetStreamingSession()
+
         if let session {
             transcribe_session_free(session)
             self.session = nil
@@ -376,6 +539,71 @@ final class SpeechToTextTranscriber: ObservableObject {
         #endif
 
         resetAudioBuffer()
+    }
+
+    private func resetStreamingSession() {
+        #if canImport(CTranscribe)
+        if let session, isStreamActive {
+            transcribe_stream_reset(session)
+        }
+        #endif
+
+        isStreamActive = false
+        streamPendingSamples.removeAll(keepingCapacity: true)
+    }
+
+    private func currentStreamingText() -> String {
+        #if canImport(CTranscribe)
+        guard let session else { return "" }
+
+        var streamText = transcribe_stream_text()
+        transcribe_stream_text_init(&streamText)
+
+        let status = transcribe_stream_get_text(session, &streamText)
+        guard status == TRANSCRIBE_OK else {
+            return String(cString: transcribe_full_text(session))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let committedText = Self.string(
+            from: streamText.committed_text,
+            byteCount: streamText.committed_text_bytes
+        )
+        let tentativeText = Self.string(
+            from: streamText.tentative_text,
+            byteCount: streamText.tentative_text_bytes
+        )
+        let displayText = (committedText + tentativeText)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !displayText.isEmpty {
+            return displayText
+        }
+
+        return Self.string(
+            from: streamText.full_text,
+            byteCount: streamText.full_text_bytes
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        #else
+        return ""
+        #endif
+    }
+
+    private func publishStreamingStatus(text: String, status: String, generation: Int) {
+        DispatchQueue.main.async {
+            guard self.currentPublicationGeneration() == generation,
+                  self.desiredTranscriptionEnabled,
+                  self.desiredStreamingEnabled else {
+                return
+            }
+
+            if !text.isEmpty {
+                self.transcribedText = text
+            }
+
+            self.statusText = status
+        }
     }
 
     private func advancePublicationGeneration() {
@@ -413,6 +641,12 @@ final class SpeechToTextTranscriber: ObservableObject {
     }
 
     #if canImport(CTranscribe)
+    private static func string(from pointer: UnsafePointer<CChar>?, byteCount: UInt64) -> String {
+        guard let pointer, byteCount > 0, byteCount <= UInt64(Int.max) else { return "" }
+        let buffer = UnsafeRawBufferPointer(start: pointer, count: Int(byteCount))
+        return String(decoding: buffer, as: UTF8.self)
+    }
+
     private static func statusString(_ status: transcribe_status) -> String {
         String(cString: transcribe_status_string(Int32(status.rawValue)))
     }

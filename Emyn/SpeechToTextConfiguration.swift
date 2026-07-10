@@ -39,6 +39,14 @@ struct SpeechToTextModelDescriptor: Identifiable, Hashable {
         return "\(sanitizedRepository)__\(sanitizedFilename)"
     }
 
+    var quantization: String {
+        Self.quantizationName(from: filename) ?? "Unknown"
+    }
+
+    var isStreamingCapable: Bool {
+        Self.streamingRepositories.contains(Self.normalizedRepository(repository))
+    }
+
     static let builtIn: [SpeechToTextModelDescriptor] = [
         SpeechToTextModelDescriptor(
             id: "whisper-tiny-en-q4",
@@ -87,6 +95,65 @@ struct SpeechToTextModelDescriptor: Identifiable, Hashable {
             repository: "handy-computer/parakeet-tdt-0.6b-v2-gguf",
             filename: "parakeet-tdt-0.6b-v2-Q4_K_M.gguf",
             byteSize: 475_491_840
+        )
+    ]
+
+    static let streamingBuiltIn: [SpeechToTextModelDescriptor] = [
+        SpeechToTextModelDescriptor(
+            id: "handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf",
+            title: "Nemotron 3.5 Asr Streaming 0.6B Q4_K_M",
+            detail: "nemotron-3.5-asr-streaming-0.6b Q4_K_M model from the transcribe.cpp catalog.",
+            repository: "handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf",
+            filename: "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf",
+            byteSize: 495_831_520
+        ),
+        SpeechToTextModelDescriptor(
+            id: "handy-computer/nemotron-speech-streaming-en-0.6b-gguf/nemotron-speech-streaming-en-0.6b-Q4_K_M.gguf",
+            title: "Nemotron Speech Streaming EN 0.6B Q4_K_M",
+            detail: "nemotron-speech-streaming-en-0.6b Q4_K_M model from the transcribe.cpp catalog.",
+            repository: "handy-computer/nemotron-speech-streaming-en-0.6b-gguf",
+            filename: "nemotron-speech-streaming-en-0.6b-Q4_K_M.gguf",
+            byteSize: 475_436_032
+        ),
+        SpeechToTextModelDescriptor(
+            id: "handy-computer/parakeet-unified-en-0.6b-gguf/parakeet-unified-en-0.6b-Q4_K_M.gguf",
+            title: "Parakeet Unified EN 0.6B Q4_K_M",
+            detail: "parakeet-unified-en-0.6b Q4_K_M model from the transcribe.cpp catalog.",
+            repository: "handy-computer/parakeet-unified-en-0.6b-gguf",
+            filename: "parakeet-unified-en-0.6b-Q4_K_M.gguf",
+            byteSize: 477_274_496
+        ),
+        SpeechToTextModelDescriptor(
+            id: "handy-computer/moonshine-streaming-tiny-gguf/moonshine-streaming-tiny-Q8_0.gguf",
+            title: "Moonshine Streaming Tiny Q8_0",
+            detail: "moonshine-streaming-tiny Q8_0 model from the transcribe.cpp catalog.",
+            repository: "handy-computer/moonshine-streaming-tiny-gguf",
+            filename: "moonshine-streaming-tiny-Q8_0.gguf",
+            byteSize: 50_462_816
+        ),
+        SpeechToTextModelDescriptor(
+            id: "handy-computer/moonshine-streaming-small-gguf/moonshine-streaming-small-Q8_0.gguf",
+            title: "Moonshine Streaming Small Q8_0",
+            detail: "moonshine-streaming-small Q8_0 model from the transcribe.cpp catalog.",
+            repository: "handy-computer/moonshine-streaming-small-gguf",
+            filename: "moonshine-streaming-small-Q8_0.gguf",
+            byteSize: 198_506_848
+        ),
+        SpeechToTextModelDescriptor(
+            id: "handy-computer/moonshine-streaming-medium-gguf/moonshine-streaming-medium-Q8_0.gguf",
+            title: "Moonshine Streaming Medium Q8_0",
+            detail: "moonshine-streaming-medium Q8_0 model from the transcribe.cpp catalog.",
+            repository: "handy-computer/moonshine-streaming-medium-gguf",
+            filename: "moonshine-streaming-medium-Q8_0.gguf",
+            byteSize: 295_793_568
+        ),
+        SpeechToTextModelDescriptor(
+            id: "handy-computer/Voxtral-Mini-4B-Realtime-2602-gguf/Voxtral-Mini-4B-Realtime-2602-Q4_K_M.gguf",
+            title: "Voxtral Mini 4B Realtime 2602 Q4_K_M",
+            detail: "Voxtral-Mini-4B-Realtime-2602 Q4_K_M model from the transcribe.cpp catalog.",
+            repository: "handy-computer/Voxtral-Mini-4B-Realtime-2602-gguf",
+            filename: "Voxtral-Mini-4B-Realtime-2602-Q4_K_M.gguf",
+            byteSize: 2_830_493_984
         )
     ]
 
@@ -150,9 +217,34 @@ struct SpeechToTextModelDescriptor: Identifiable, Hashable {
         return "\(family) \(quantization) model from the transcribe.cpp catalog."
     }
 
-    private static func quantizationName(from text: String) -> String? {
-        let knownQuantizations = ["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "F16", "F32"]
+    static let preferredQuantizationOrder = ["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "F16", "BF16", "F32", "Unknown"]
+
+    private static let streamingRepositories: Set<String> = [
+        "handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf",
+        "handy-computer/nemotron-speech-streaming-en-0.6b-gguf",
+        "handy-computer/parakeet-unified-en-0.6b-gguf",
+        "handy-computer/moonshine-streaming-tiny-gguf",
+        "handy-computer/moonshine-streaming-small-gguf",
+        "handy-computer/moonshine-streaming-medium-gguf",
+        "handy-computer/voxtral-mini-4b-realtime-2602-gguf"
+    ]
+
+    static func quantizationName(from text: String) -> String? {
+        let knownQuantizations = preferredQuantizationOrder
+            .filter { $0 != "Unknown" }
+            .sorted { $0.count > $1.count }
         return knownQuantizations.first { text.contains($0) }
+    }
+
+    static func quantizationSortKey(_ quantization: String) -> (Int, String) {
+        let rank = preferredQuantizationOrder.firstIndex(of: quantization) ?? preferredQuantizationOrder.count
+        return (rank, quantization)
+    }
+
+    private static func normalizedRepository(_ repository: String) -> String {
+        repository
+            .replacingOccurrences(of: "https://huggingface.co/", with: "")
+            .lowercased()
     }
 }
 
@@ -354,6 +446,20 @@ final class SpeechToTextConfiguration: ObservableObject {
         didSet { defaults.set(selectedModelID, forKey: Key.selectedModelID) }
     }
 
+    @Published var isStreamingEnabled: Bool {
+        didSet {
+            defaults.set(isStreamingEnabled, forKey: Key.streamingEnabled)
+            reconcileSelection()
+        }
+    }
+
+    @Published var selectedQuantization: String {
+        didSet {
+            defaults.set(selectedQuantization, forKey: Key.selectedQuantization)
+            reconcileSelection()
+        }
+    }
+
     @Published var selectedMicrophoneID: String {
         didSet { defaults.set(selectedMicrophoneID, forKey: Key.selectedMicrophoneID) }
     }
@@ -391,9 +497,33 @@ final class SpeechToTextConfiguration: ObservableObject {
     }
 
     private let defaults: UserDefaults
+    private var isReconcilingSelection = false
+
+    var modeFilteredModels: [SpeechToTextModelDescriptor] {
+        let matchingModels = availableModels.filter { model in
+            !isStreamingEnabled || model.isStreamingCapable
+        }
+
+        if isStreamingEnabled && matchingModels.isEmpty {
+            return SpeechToTextModelDescriptor.streamingBuiltIn
+        }
+
+        return matchingModels
+    }
+
+    var availableQuantizations: [String] {
+        Self.quantizations(in: modeFilteredModels)
+    }
+
+    var filteredModels: [SpeechToTextModelDescriptor] {
+        modeFilteredModels.filter { $0.quantization == selectedQuantization }
+    }
 
     var selectedModel: SpeechToTextModelDescriptor {
-        SpeechToTextModelDescriptor.descriptor(for: selectedModelID, in: availableModels)
+        filteredModels.first { $0.id == selectedModelID }
+            ?? filteredModels.first
+            ?? modeFilteredModels.first
+            ?? SpeechToTextModelDescriptor.descriptor(for: selectedModelID, in: availableModels)
     }
 
     var selectedModelLocalURL: URL {
@@ -434,6 +564,8 @@ final class SpeechToTextConfiguration: ObservableObject {
             selectedModelID = SpeechToTextModelDescriptor.builtIn[0].id
         }
 
+        isStreamingEnabled = defaults.object(forKey: Key.streamingEnabled) as? Bool ?? false
+        selectedQuantization = defaults.string(forKey: Key.selectedQuantization) ?? "Q4_K_M"
         selectedMicrophoneID = defaults.string(forKey: Key.selectedMicrophoneID) ?? ""
 
         captionFont = defaults.string(forKey: Key.captionFont)
@@ -449,16 +581,14 @@ final class SpeechToTextConfiguration: ObservableObject {
         captionAlignment = defaults.string(forKey: Key.captionAlignment)
             .flatMap(SpeechToTextCaptionAlignment.init(rawValue:)) ?? .bottomCenter
         areCaptionsAffectedByNTSC = defaults.object(forKey: Key.captionsAffectedByNTSC) as? Bool ?? false
+
+        reconcileSelection()
     }
 
     func replaceAvailableModels(_ models: [SpeechToTextModelDescriptor]) {
         let nextModels = models.isEmpty ? SpeechToTextModelDescriptor.builtIn : models
         availableModels = nextModels
-
-        guard nextModels.contains(where: { $0.id == selectedModelID }) else {
-            selectedModelID = nextModels[0].id
-            return
-        }
+        reconcileSelection()
     }
 
     func localModelPathForBackend() -> String? {
@@ -510,9 +640,47 @@ final class SpeechToTextConfiguration: ObservableObject {
         return max(4, min(48, value))
     }
 
+    private func reconcileSelection() {
+        guard !isReconcilingSelection else { return }
+        isReconcilingSelection = true
+        defer { isReconcilingSelection = false }
+
+        let quantizations = availableQuantizations
+        if let preferredQuantization = Self.preferredQuantization(from: quantizations),
+           !quantizations.contains(selectedQuantization) {
+            selectedQuantization = preferredQuantization
+        }
+
+        let models = filteredModels
+        guard !models.isEmpty else { return }
+
+        if !models.contains(where: { $0.id == selectedModelID }) {
+            selectedModelID = models[0].id
+        }
+    }
+
+    private static func quantizations(in models: [SpeechToTextModelDescriptor]) -> [String] {
+        let quantizations = Set(models.map(\.quantization))
+        return quantizations.sorted { lhs, rhs in
+            let lhsKey = SpeechToTextModelDescriptor.quantizationSortKey(lhs)
+            let rhsKey = SpeechToTextModelDescriptor.quantizationSortKey(rhs)
+            if lhsKey.0 != rhsKey.0 {
+                return lhsKey.0 < rhsKey.0
+            }
+            return lhsKey.1.localizedStandardCompare(rhsKey.1) == .orderedAscending
+        }
+    }
+
+    private static func preferredQuantization(from quantizations: [String]) -> String? {
+        SpeechToTextModelDescriptor.preferredQuantizationOrder.first { quantizations.contains($0) }
+            ?? quantizations.first
+    }
+
     private enum Key {
         static let enabled = "speechToText.enabled.v1"
         static let selectedModelID = "speechToText.selectedModelID.v1"
+        static let streamingEnabled = "speechToText.streamingEnabled.v1"
+        static let selectedQuantization = "speechToText.selectedQuantization.v1"
         static let selectedMicrophoneID = "speechToText.selectedMicrophoneID.v1"
         static let captionFont = "speechToText.captionFont.v1"
         static let captionFontSize = "speechToText.captionFontSize.v1"

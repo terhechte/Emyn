@@ -8,9 +8,9 @@
 
 /* Begin PBXBuildFile section */
 		398815E14FDF9873296C2392 /* PlatformMacOSKit in Frameworks */ = {isa = PBXBuildFile; productRef = 22FF1A5302340D0E84B52358 /* PlatformMacOSKit */; };
-		4D5A00012FF7000000E2BC47 /* CTranscribe in Frameworks */ = {isa = PBXBuildFile; productRef = 4D5A00022FF7000000E2BC47 /* CTranscribe */; };
-		4D1E00032FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = 4D1E00012FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		4D1E00032FF5000000E2BC47 /* com.stylemac.Emyn.VirtualCameraExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = 4D1E00012FF5000000E2BC47 /* com.stylemac.Emyn.VirtualCameraExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		4D1E00042FF5000000E2BC47 /* Emyn/SharedFrameStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D1E00052FF5000000E2BC47 /* Emyn/SharedFrameStore.swift */; };
+		4D5A00012FF7000000E2BC47 /* CTranscribe in Frameworks */ = {isa = PBXBuildFile; productRef = 4D5A00022FF7000000E2BC47 /* CTranscribe */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -30,7 +30,7 @@
 			dstPath = "$(CONTENTS_FOLDER_PATH)/Library/SystemExtensions";
 			dstSubfolderSpec = 16;
 			files = (
-				4D1E00032FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension in Embed System Extensions */,
+				4D1E00032FF5000000E2BC47 /* com.stylemac.Emyn.VirtualCameraExtension.systemextension in Embed System Extensions */,
 			);
 			name = "Embed System Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -38,7 +38,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		4D1E00012FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = com.stylemac.Emyn.VirtualCameraExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
+		4D1E00012FF5000000E2BC47 /* com.stylemac.Emyn.VirtualCameraExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = com.stylemac.Emyn.VirtualCameraExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
 		4D1E00052FF5000000E2BC47 /* Emyn/SharedFrameStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Emyn/SharedFrameStore.swift; sourceTree = "<group>"; };
 		4D3915AE2FF4F92200E2BC47 /* Emyn.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Emyn.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -103,7 +103,7 @@
 			isa = PBXGroup;
 			children = (
 				4D3915AE2FF4F92200E2BC47 /* Emyn.app */,
-				4D1E00012FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension */,
+				4D1E00012FF5000000E2BC47 /* com.stylemac.Emyn.VirtualCameraExtension.systemextension */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -138,7 +138,7 @@
 			packageProductDependencies = (
 			);
 			productName = EmynVirtualCameraExtension;
-			productReference = 4D1E00012FF5000000E2BC47 /* EmynVirtualCameraExtension.systemextension */;
+			productReference = 4D1E00012FF5000000E2BC47 /* com.stylemac.Emyn.VirtualCameraExtension.systemextension */;
 			productType = "com.apple.product-type.system-extension";
 		};
 		4D3915AD2FF4F92200E2BC47 /* Emyn */ = {
@@ -258,7 +258,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = EmynVirtualCameraExtension/EmynVirtualCameraExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 76VT9VZ6GK;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -290,7 +290,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = EmynVirtualCameraExtension/EmynVirtualCameraExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 76VT9VZ6GK;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -445,7 +445,7 @@
 				CODE_SIGN_ENTITLEMENTS = Emyn/Emyn.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 76VT9VZ6GK;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -484,7 +484,7 @@
 				CODE_SIGN_ENTITLEMENTS = Emyn/Emyn.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 76VT9VZ6GK;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -548,13 +548,13 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		8F550D1E0CC3C9A863ECC0BE /* XCLocalSwiftPackageReference "platform-macos/swift/PlatformMacOSKit" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = "platform-macos/swift/PlatformMacOSKit";
-		};
 		4D5A00032FF7000000E2BC47 /* XCLocalSwiftPackageReference "transcribe-cpp-swift" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "transcribe-cpp-swift";
+		};
+		8F550D1E0CC3C9A863ECC0BE /* XCLocalSwiftPackageReference "platform-macos/swift/PlatformMacOSKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "platform-macos/swift/PlatformMacOSKit";
 		};
 /* End XCLocalSwiftPackageReference section */
 
