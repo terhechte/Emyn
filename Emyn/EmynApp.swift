@@ -6,6 +6,8 @@
 //
 
 import SwiftUI
+import TranscriptionKit
+import VideoCompositionKit
 
 @main
 struct EmynApp: App {

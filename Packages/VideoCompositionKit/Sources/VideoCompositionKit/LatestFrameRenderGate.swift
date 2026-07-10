@@ -1,11 +1,13 @@
 import Foundation
 
-final class LatestFrameRenderGate<Frame> {
+public final class LatestFrameRenderGate<Frame> {
     private let lock = NSLock()
     private var renderInFlight = false
     private var pendingFrame: Frame?
 
-    func begin(with frame: Frame) -> Frame? {
+    public init() {}
+
+    public func begin(with frame: Frame) -> Frame? {
         lock.lock()
         defer { lock.unlock() }
 
@@ -18,7 +20,7 @@ final class LatestFrameRenderGate<Frame> {
         return frame
     }
 
-    func finish() -> Frame? {
+    public func finish() -> Frame? {
         lock.lock()
         defer { lock.unlock() }
 

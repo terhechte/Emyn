@@ -1,4 +1,5 @@
 .release/
+**/.build/
 
 # Generated PlatformMacOSKit binary artifact
 /platform-macos/swift/PlatformMacOSKit/platform_macosFFI.xcframework/

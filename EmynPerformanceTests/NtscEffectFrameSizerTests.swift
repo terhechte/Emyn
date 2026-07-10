@@ -1,5 +1,5 @@
 import XCTest
-@testable import EmynPerformanceCore
+@testable import VideoCompositionKit
 
 final class NtscEffectFrameSizerTests: XCTestCase {
     func testUsesHalfSizeForOutputFrame() {

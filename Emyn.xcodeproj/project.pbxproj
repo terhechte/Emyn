@@ -7,10 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		398815E14FDF9873296C2392 /* PlatformMacOSKit in Frameworks */ = {isa = PBXBuildFile; productRef = 22FF1A5302340D0E84B52358 /* PlatformMacOSKit */; };
 		4D1E00032FF5000000E2BC47 /* com.stylemac.Emyn.VirtualCameraExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = 4D1E00012FF5000000E2BC47 /* com.stylemac.Emyn.VirtualCameraExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		4D1E00042FF5000000E2BC47 /* Emyn/SharedFrameStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D1E00052FF5000000E2BC47 /* Emyn/SharedFrameStore.swift */; };
-		4D5A00012FF7000000E2BC47 /* CTranscribe in Frameworks */ = {isa = PBXBuildFile; productRef = 4D5A00022FF7000000E2BC47 /* CTranscribe */; };
+		C10000012FF8000000E2BC47 /* SharedFrameKit in Frameworks */ = {isa = PBXBuildFile; productRef = B10000012FF8000000E2BC47 /* SharedFrameKit */; };
+		C10000022FF8000000E2BC47 /* WindowCaptureKit in Frameworks */ = {isa = PBXBuildFile; productRef = B10000022FF8000000E2BC47 /* WindowCaptureKit */; };
+		C10000032FF8000000E2BC47 /* TranscriptionKit in Frameworks */ = {isa = PBXBuildFile; productRef = B10000032FF8000000E2BC47 /* TranscriptionKit */; };
+		C10000042FF8000000E2BC47 /* BackgroundRemovalKit in Frameworks */ = {isa = PBXBuildFile; productRef = B10000042FF8000000E2BC47 /* BackgroundRemovalKit */; };
+		C10000052FF8000000E2BC47 /* VideoCompositionKit in Frameworks */ = {isa = PBXBuildFile; productRef = B10000052FF8000000E2BC47 /* VideoCompositionKit */; };
+		C10000062FF8000000E2BC47 /* SharedFrameKit in Frameworks */ = {isa = PBXBuildFile; productRef = B10000012FF8000000E2BC47 /* SharedFrameKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -39,7 +42,6 @@
 
 /* Begin PBXFileReference section */
 		4D1E00012FF5000000E2BC47 /* com.stylemac.Emyn.VirtualCameraExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = com.stylemac.Emyn.VirtualCameraExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
-		4D1E00052FF5000000E2BC47 /* Emyn/SharedFrameStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Emyn/SharedFrameStore.swift; sourceTree = "<group>"; };
 		4D3915AE2FF4F92200E2BC47 /* Emyn.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Emyn.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -74,6 +76,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C10000062FF8000000E2BC47 /* SharedFrameKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -81,8 +84,11 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				4D5A00012FF7000000E2BC47 /* CTranscribe in Frameworks */,
-				398815E14FDF9873296C2392 /* PlatformMacOSKit in Frameworks */,
+				C10000012FF8000000E2BC47 /* SharedFrameKit in Frameworks */,
+				C10000022FF8000000E2BC47 /* WindowCaptureKit in Frameworks */,
+				C10000032FF8000000E2BC47 /* TranscriptionKit in Frameworks */,
+				C10000042FF8000000E2BC47 /* BackgroundRemovalKit in Frameworks */,
+				C10000052FF8000000E2BC47 /* VideoCompositionKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -95,7 +101,6 @@
 				4D3915B02FF4F92200E2BC47 /* Emyn */,
 				4D1E00022FF5000000E2BC47 /* EmynVirtualCameraExtension */,
 				4D3915AF2FF4F92200E2BC47 /* Products */,
-				4D39160C2FF4FF0700E2BC47 /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -106,14 +111,6 @@
 				4D1E00012FF5000000E2BC47 /* com.stylemac.Emyn.VirtualCameraExtension.systemextension */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		4D39160C2FF4FF0700E2BC47 /* Recovered References */ = {
-			isa = PBXGroup;
-			children = (
-				4D1E00052FF5000000E2BC47 /* Emyn/SharedFrameStore.swift */,
-			);
-			name = "Recovered References";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -136,6 +133,7 @@
 			);
 			name = EmynVirtualCameraExtension;
 			packageProductDependencies = (
+				B10000012FF8000000E2BC47 /* SharedFrameKit */,
 			);
 			productName = EmynVirtualCameraExtension;
 			productReference = 4D1E00012FF5000000E2BC47 /* com.stylemac.Emyn.VirtualCameraExtension.systemextension */;
@@ -160,8 +158,11 @@
 			);
 			name = Emyn;
 			packageProductDependencies = (
-				22FF1A5302340D0E84B52358 /* PlatformMacOSKit */,
-				4D5A00022FF7000000E2BC47 /* CTranscribe */,
+				B10000012FF8000000E2BC47 /* SharedFrameKit */,
+				B10000022FF8000000E2BC47 /* WindowCaptureKit */,
+				B10000032FF8000000E2BC47 /* TranscriptionKit */,
+				B10000042FF8000000E2BC47 /* BackgroundRemovalKit */,
+				B10000052FF8000000E2BC47 /* VideoCompositionKit */,
 			);
 			productName = Emyn;
 			productReference = 4D3915AE2FF4F92200E2BC47 /* Emyn.app */;
@@ -195,8 +196,11 @@
 			mainGroup = 4D3915A52FF4F92200E2BC47;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				8F550D1E0CC3C9A863ECC0BE /* XCLocalSwiftPackageReference "platform-macos/swift/PlatformMacOSKit" */,
-				4D5A00032FF7000000E2BC47 /* XCLocalSwiftPackageReference "transcribe-cpp-swift" */,
+				A10000012FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/SharedFrameKit" */,
+				A10000022FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/WindowCaptureKit" */,
+				A10000032FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/TranscriptionKit" */,
+				A10000042FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/BackgroundRemovalKit" */,
+				A10000052FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/VideoCompositionKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4D3915AF2FF4F92200E2BC47 /* Products */;
@@ -231,7 +235,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				4D1E00042FF5000000E2BC47 /* Emyn/SharedFrameStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -548,26 +551,53 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		4D5A00032FF7000000E2BC47 /* XCLocalSwiftPackageReference "transcribe-cpp-swift" */ = {
+		A10000012FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/SharedFrameKit" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = "transcribe-cpp-swift";
+			relativePath = Packages/SharedFrameKit;
 		};
-		8F550D1E0CC3C9A863ECC0BE /* XCLocalSwiftPackageReference "platform-macos/swift/PlatformMacOSKit" */ = {
+		A10000022FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/WindowCaptureKit" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = "platform-macos/swift/PlatformMacOSKit";
+			relativePath = Packages/WindowCaptureKit;
+		};
+		A10000032FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/TranscriptionKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/TranscriptionKit;
+		};
+		A10000042FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/BackgroundRemovalKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/BackgroundRemovalKit;
+		};
+		A10000052FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/VideoCompositionKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/VideoCompositionKit;
 		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		22FF1A5302340D0E84B52358 /* PlatformMacOSKit */ = {
+		B10000012FF8000000E2BC47 /* SharedFrameKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 8F550D1E0CC3C9A863ECC0BE /* XCLocalSwiftPackageReference "platform-macos/swift/PlatformMacOSKit" */;
-			productName = PlatformMacOSKit;
+			package = A10000012FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/SharedFrameKit" */;
+			productName = SharedFrameKit;
 		};
-		4D5A00022FF7000000E2BC47 /* CTranscribe */ = {
+		B10000022FF8000000E2BC47 /* WindowCaptureKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 4D5A00032FF7000000E2BC47 /* XCLocalSwiftPackageReference "transcribe-cpp-swift" */;
-			productName = CTranscribe;
+			package = A10000022FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/WindowCaptureKit" */;
+			productName = WindowCaptureKit;
+		};
+		B10000032FF8000000E2BC47 /* TranscriptionKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000032FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/TranscriptionKit" */;
+			productName = TranscriptionKit;
+		};
+		B10000042FF8000000E2BC47 /* BackgroundRemovalKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000042FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/BackgroundRemovalKit" */;
+			productName = BackgroundRemovalKit;
+		};
+		B10000052FF8000000E2BC47 /* VideoCompositionKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000052FF8000000E2BC47 /* XCLocalSwiftPackageReference "Packages/VideoCompositionKit" */;
+			productName = VideoCompositionKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

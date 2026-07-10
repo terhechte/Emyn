@@ -3,6 +3,7 @@ import AVFoundation
 import Combine
 import Foundation
 import SwiftUI
+import SharedFrameKit
 
 enum StartupPermissionDefaults {
     private enum Key {

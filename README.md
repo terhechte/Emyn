@@ -26,7 +26,7 @@ Emyn is a macOS virtual camera app for presenting yourself, app windows, media, 
 
 ## Requirements
 
-- macOS 13 or newer.
+- macOS 14 or newer.
 - Xcode with macOS development tools.
 - Rust toolchain with `rustup` for rebuilding the macOS platform XCFramework.
 - Apple developer signing setup for installing the virtual camera system extension outside local unsigned development.
@@ -35,8 +35,13 @@ The app uses camera, microphone, screen recording, accessibility, input monitori
 
 ## Repository Layout
 
-- `Emyn/` - SwiftUI app, camera pipeline, preview UI, presentation controls, and performance core sources.
+- `Emyn/` - SwiftUI views, app lifecycle, permission flows, and adapters between package APIs.
 - `EmynVirtualCameraExtension/` - Core Media IO system extension that exposes the generated frames as a virtual camera.
+- `Packages/WindowCaptureKit/` - Window discovery, preview/stream capture, mouse and keyboard forwarding, and pointer-coordinate mapping.
+- `Packages/TranscriptionKit/` - Microphone capture, model catalog/download management, and local speech transcription.
+- `Packages/BackgroundRemovalKit/` - Vision person segmentation, temporal smoothing, and reusable render-mask generation.
+- `Packages/VideoCompositionKit/` - Camera input, backgrounds, filters, captions, effects, frame composition, and output publishing.
+- `Packages/SharedFrameKit/` - The memory-mapped frame contract shared by the composition pipeline and virtual-camera extension.
 - `platform-macos/` - Rust macOS platform layer, UniFFI bindings, ScreenCaptureKit/window-control support, input forwarding, and NTSC processing.
 - `platform-macos/swift/PlatformMacOSKit/` - Generated Swift package and XCFramework consumed by the app.
 - `transcribe-cpp-swift/` - Local Swift package for speech-to-text integration.
@@ -83,11 +88,13 @@ Use `./release.sh --help` for signing, notarization, and XCFramework options.
 
 ## Tests
 
-The performance core can be tested through Swift Package Manager:
+The package graph and performance-sensitive helpers can be tested through Swift Package Manager:
 
 ```sh
 swift test
 ```
+
+See [docs/package-architecture.md](docs/package-architecture.md) for package dependencies and examples of reusing an individual package from another app.
 
 ## Testing
 

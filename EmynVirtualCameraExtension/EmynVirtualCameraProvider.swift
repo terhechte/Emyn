@@ -4,6 +4,7 @@ import Darwin
 import Foundation
 import IOKit.audio
 import os.log
+import SharedFrameKit
 
 private let extensionFrameRate: Int32 = 30
 

@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import VideoCompositionKit
 
 final class SampleBufferPreviewView: NSView {
     private let displayLayer = AVSampleBufferDisplayLayer()

@@ -1,8 +1,8 @@
 import CoreGraphics
 import Foundation
 
-enum WindowBackgroundCaptureSizer {
-    static func captureSize(
+public enum WindowBackgroundCaptureSizer {
+    public static func captureSize(
         rawWidth: CGFloat,
         rawHeight: CGFloat,
         maxWidth: Int,

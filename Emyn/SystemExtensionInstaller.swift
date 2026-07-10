@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import SystemExtensions
+import SharedFrameKit
 
 enum SystemExtensionInstallationState: Equatable {
     case notInstalled

@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import BackgroundRemovalKit
 import Combine
 import CoreImage
 import CoreMedia
@@ -9,23 +10,30 @@ import Metal
 import PlatformMacOSKit
 import QuartzCore
 import ScreenCaptureKit
+import SharedFrameKit
 import UniformTypeIdentifiers
-import Vision
+import WindowCaptureKit
 
-struct CameraDeviceInfo: Identifiable, Equatable {
-    let id: String
-    let name: String
-    let detail: String
+public struct CameraDeviceInfo: Identifiable, Equatable {
+    public let id: String
+    public let name: String
+    public let detail: String
+
+    public init(id: String, name: String, detail: String) {
+        self.id = id
+        self.name = name
+        self.detail = detail
+    }
 }
 
-enum CameraInputQuality: String, CaseIterable, Identifiable {
+public enum CameraInputQuality: String, CaseIterable, Identifiable {
     case hd720
     case hd1080
     case uhd4K
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .hd720:
             return "720p"
@@ -36,7 +44,7 @@ enum CameraInputQuality: String, CaseIterable, Identifiable {
         }
     }
 
-    var dimensionsTitle: String {
+    public var dimensionsTitle: String {
         switch self {
         case .hd720:
             return "1280x720"
@@ -47,7 +55,7 @@ enum CameraInputQuality: String, CaseIterable, Identifiable {
         }
     }
 
-    var sessionPreset: AVCaptureSession.Preset {
+    public var sessionPreset: AVCaptureSession.Preset {
         switch self {
         case .hd720:
             return .hd1280x720
@@ -59,234 +67,11 @@ enum CameraInputQuality: String, CaseIterable, Identifiable {
     }
 }
 
-enum SegmentationQuality: String, CaseIterable, Identifiable {
-    case fast
-    case balanced
-    case accurate
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .fast: return "Fast"
-        case .balanced: return "Balanced"
-        case .accurate: return "Accurate"
-        }
-    }
-
-    var visionQualityLevel: VNGeneratePersonSegmentationRequest.QualityLevel {
-        switch self {
-        case .fast: return .fast
-        case .balanced: return .balanced
-        case .accurate: return .accurate
-        }
-    }
-}
-
-enum SegmentationAnalysisResolution: String, CaseIterable, Identifiable {
-    case low
-    case half
-    case full
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .low: return "Low"
-        case .half: return "Half"
-        case .full: return "Full"
-        }
-    }
-
-    var dimensionsTitle: String {
-        dimensionsTitle(for: SharedFrameConfiguration.outputFrameSize)
-    }
-
-    func dimensionsTitle(for outputFrameSize: OutputFrameSize) -> String {
-        let dimensions = pixelDimensions(for: outputFrameSize)
-        return "\(dimensions.width)x\(dimensions.height)"
-    }
-
-    func pixelDimensions(for outputFrameSize: OutputFrameSize) -> (width: Int, height: Int) {
-        switch self {
-        case .low:
-            return (384, 216)
-        case .half:
-            return (outputFrameSize.width / 2, outputFrameSize.height / 2)
-        case .full:
-            return (outputFrameSize.width, outputFrameSize.height)
-        }
-    }
-}
-
-private enum BackgroundRemovalDefaults {
-    private enum Key {
-        static let quality = "backgroundRemoval.quality"
-        static let analysisResolution = "backgroundRemoval.analysisResolution"
-        static let temporalSmoothing = "backgroundRemoval.temporalSmoothing"
-        static let maskBlurRadius = "backgroundRemoval.maskBlurRadius"
-        static let maskReuseFrameCount = "backgroundRemoval.maskReuseFrameCount"
-    }
-
-    static let defaultQuality: SegmentationQuality = .accurate
-    static let defaultAnalysisResolution: SegmentationAnalysisResolution = .half
-    static let defaultTemporalSmoothing: Double = 0
-    static let defaultMaskBlurRadius: Double = 0.9
-    static let defaultMaskReuseFrameCount = 0
-
-    static func loadQuality(from defaults: UserDefaults = .standard) -> SegmentationQuality {
-        guard let rawValue = defaults.string(forKey: Key.quality),
-              let quality = SegmentationQuality(rawValue: rawValue) else {
-            return defaultQuality
-        }
-
-        return quality
-    }
-
-    static func saveQuality(_ quality: SegmentationQuality, to defaults: UserDefaults = .standard) {
-        defaults.set(quality.rawValue, forKey: Key.quality)
-    }
-
-    static func loadAnalysisResolution(from defaults: UserDefaults = .standard) -> SegmentationAnalysisResolution {
-        guard let rawValue = defaults.string(forKey: Key.analysisResolution),
-              let resolution = SegmentationAnalysisResolution(rawValue: rawValue) else {
-            return defaultAnalysisResolution
-        }
-
-        return resolution
-    }
-
-    static func saveAnalysisResolution(
-        _ resolution: SegmentationAnalysisResolution,
-        to defaults: UserDefaults = .standard
-    ) {
-        defaults.set(resolution.rawValue, forKey: Key.analysisResolution)
-    }
-
-    static func loadTemporalSmoothing(from defaults: UserDefaults = .standard) -> Double {
-        guard let value = defaults.object(forKey: Key.temporalSmoothing) as? NSNumber else {
-            return defaultTemporalSmoothing
-        }
-
-        return clampedTemporalSmoothing(value.doubleValue)
-    }
-
-    static func saveTemporalSmoothing(_ value: Double, to defaults: UserDefaults = .standard) {
-        defaults.set(clampedTemporalSmoothing(value), forKey: Key.temporalSmoothing)
-    }
-
-    static func loadMaskBlurRadius(from defaults: UserDefaults = .standard) -> Double {
-        guard let value = defaults.object(forKey: Key.maskBlurRadius) as? NSNumber else {
-            return defaultMaskBlurRadius
-        }
-
-        return clampedMaskBlurRadius(value.doubleValue)
-    }
-
-    static func saveMaskBlurRadius(_ value: Double, to defaults: UserDefaults = .standard) {
-        defaults.set(clampedMaskBlurRadius(value), forKey: Key.maskBlurRadius)
-    }
-
-    static func loadMaskReuseFrameCount(from defaults: UserDefaults = .standard) -> Int {
-        guard let value = defaults.object(forKey: Key.maskReuseFrameCount) as? NSNumber else {
-            return defaultMaskReuseFrameCount
-        }
-
-        return clampedMaskReuseFrameCount(value.intValue)
-    }
-
-    static func saveMaskReuseFrameCount(_ value: Int, to defaults: UserDefaults = .standard) {
-        defaults.set(clampedMaskReuseFrameCount(value), forKey: Key.maskReuseFrameCount)
-    }
-
-    private static func clampedTemporalSmoothing(_ value: Double) -> Double {
-        guard value.isFinite else { return defaultTemporalSmoothing }
-        return max(0, min(0.9, value))
-    }
-
-    private static func clampedMaskBlurRadius(_ value: Double) -> Double {
-        guard value.isFinite else { return defaultMaskBlurRadius }
-        return max(0, min(4, value))
-    }
-
-    private static func clampedMaskReuseFrameCount(_ value: Int) -> Int {
-        max(0, min(5, value))
-    }
-}
-
-enum BackgroundMediaFit: String, CaseIterable, Identifiable {
-    case fill
-    case contain
-    case scale
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .fill: return "Fill"
-        case .contain: return "Contain"
-        case .scale: return "Scale"
-        }
-    }
-}
-
-enum BackgroundContentAlignment: String, CaseIterable, Identifiable {
-    case topLeft
-    case topCenter
-    case topRight
-    case middleLeft
-    case middleCenter
-    case middleRight
-    case bottomLeft
-    case bottomCenter
-    case bottomRight
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .topLeft: return "Top Left"
-        case .topCenter: return "Top Center"
-        case .topRight: return "Top Right"
-        case .middleLeft: return "Middle Left"
-        case .middleCenter: return "Middle Center"
-        case .middleRight: return "Middle Right"
-        case .bottomLeft: return "Bottom Left"
-        case .bottomCenter: return "Bottom Center"
-        case .bottomRight: return "Bottom Right"
-        }
-    }
-
-    func origin(for contentSize: CGSize, in outputExtent: CGRect) -> CGPoint {
-        let x: CGFloat
-        switch self {
-        case .topLeft, .middleLeft, .bottomLeft:
-            x = outputExtent.minX
-        case .topCenter, .middleCenter, .bottomCenter:
-            x = outputExtent.midX - contentSize.width * 0.5
-        case .topRight, .middleRight, .bottomRight:
-            x = outputExtent.maxX - contentSize.width
-        }
-
-        let y: CGFloat
-        switch self {
-        case .bottomLeft, .bottomCenter, .bottomRight:
-            y = outputExtent.minY
-        case .middleLeft, .middleCenter, .middleRight:
-            y = outputExtent.midY - contentSize.height * 0.5
-        case .topLeft, .topCenter, .topRight:
-            y = outputExtent.maxY - contentSize.height
-        }
-
-        return CGPoint(x: x, y: y)
-    }
-}
-
-enum BackgroundMediaKind {
+public enum BackgroundMediaKind {
     case image
     case video
 
-    var title: String {
+    public var title: String {
         switch self {
         case .image: return "Image"
         case .video: return "Video"
@@ -311,16 +96,16 @@ private enum BackgroundMediaError: LocalizedError {
     }
 }
 
-enum BackgroundPreset: String, CaseIterable, Identifiable {
+public enum BackgroundPreset: String, CaseIterable, Identifiable {
     case black
     case white
     case green
     case blue
     case transparent
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .black: return "Black"
         case .white: return "White"
@@ -330,7 +115,7 @@ enum BackgroundPreset: String, CaseIterable, Identifiable {
         }
     }
 
-    var rgba: (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
+    public var rgba: (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
         switch self {
         case .black:
             return (0.02, 0.02, 0.025, 1.0)
@@ -345,7 +130,7 @@ enum BackgroundPreset: String, CaseIterable, Identifiable {
         }
     }
 
-    var nsColor: NSColor {
+    public var nsColor: NSColor {
         let value = rgba
         return NSColor(
             calibratedRed: value.red,
@@ -356,14 +141,14 @@ enum BackgroundPreset: String, CaseIterable, Identifiable {
     }
 }
 
-enum NtscPreset: String, CaseIterable, Identifiable {
+public enum NtscPreset: String, CaseIterable, Identifiable {
     case low
     case medium
     case hard
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .low: return "Low"
         case .medium: return "Medium"
@@ -371,7 +156,7 @@ enum NtscPreset: String, CaseIterable, Identifiable {
         }
     }
 
-    var platformPreset: PlatformMacOSKit.NtscEffectPreset {
+    public var platformPreset: PlatformMacOSKit.NtscEffectPreset {
         switch self {
         case .low: return .low
         case .medium: return .medium
@@ -404,7 +189,7 @@ private struct ProcessingSettings {
     var ntscPreset: NtscPreset = .medium
     var presentationEffects = PresentationEffects()
     var speechCaptionText: String?
-    var speechCaptionConfiguration = SpeechToTextCaptionRenderConfiguration.defaultValue
+    var speechCaptionConfiguration = CaptionRenderConfiguration.defaultValue
 }
 
 private struct AnimatedScalar {
@@ -572,23 +357,23 @@ private struct WindowBackgroundFrameSnapshot {
     let fadeProgress: Double
 }
 
-final class CameraPipeline: NSObject, ObservableObject {
-    @Published private(set) var cameras: [CameraDeviceInfo] = []
-    @Published var selectedCameraID: String = "" {
+public final class CameraPipeline: NSObject, ObservableObject {
+    @Published public private(set) var cameras: [CameraDeviceInfo] = []
+    @Published public var selectedCameraID: String = "" {
         didSet {
             guard oldValue != selectedCameraID, isRunning else { return }
             restart()
         }
     }
 
-    @Published var cameraInputQuality: CameraInputQuality = .hd720 {
+    @Published public var cameraInputQuality: CameraInputQuality = .hd720 {
         didSet {
             guard oldValue != cameraInputQuality, isRunning else { return }
             restart()
         }
     }
 
-    @Published var backgroundRemovalEnabled = true {
+    @Published public var backgroundRemovalEnabled = true {
         didSet {
             updateSettings { $0.backgroundRemovalEnabled = self.backgroundRemovalEnabled }
             updateBackgroundMediaPlaybackState()
@@ -598,17 +383,14 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    @Published var quality: SegmentationQuality = BackgroundRemovalDefaults.loadQuality() {
+    @Published public var quality: SegmentationQuality = BackgroundRemovalDefaults.loadQuality() {
         didSet {
             BackgroundRemovalDefaults.saveQuality(quality)
             updateSettings { $0.quality = self.quality }
-            segmentationQueue.async { [quality] in
-                self.segmentationRequest.qualityLevel = quality.visionQualityLevel
-            }
         }
     }
 
-    @Published var analysisResolution: SegmentationAnalysisResolution = BackgroundRemovalDefaults.loadAnalysisResolution() {
+    @Published public var analysisResolution: SegmentationAnalysisResolution = BackgroundRemovalDefaults.loadAnalysisResolution() {
         didSet {
             BackgroundRemovalDefaults.saveAnalysisResolution(analysisResolution)
             updateSettings { $0.analysisResolution = self.analysisResolution }
@@ -616,14 +398,14 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    @Published var temporalSmoothing: Double = BackgroundRemovalDefaults.loadTemporalSmoothing() {
+    @Published public var temporalSmoothing: Double = BackgroundRemovalDefaults.loadTemporalSmoothing() {
         didSet {
             BackgroundRemovalDefaults.saveTemporalSmoothing(temporalSmoothing)
             updateSettings { $0.temporalSmoothing = self.temporalSmoothing }
         }
     }
 
-    @Published var maskBlurRadius: Double = BackgroundRemovalDefaults.loadMaskBlurRadius() {
+    @Published public var maskBlurRadius: Double = BackgroundRemovalDefaults.loadMaskBlurRadius() {
         didSet {
             BackgroundRemovalDefaults.saveMaskBlurRadius(maskBlurRadius)
             updateSettings { $0.maskBlurRadius = self.maskBlurRadius }
@@ -631,57 +413,57 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    @Published var maskReuseFrameCount: Int = BackgroundRemovalDefaults.loadMaskReuseFrameCount() {
+    @Published public var maskReuseFrameCount: Int = BackgroundRemovalDefaults.loadMaskReuseFrameCount() {
         didSet {
             BackgroundRemovalDefaults.saveMaskReuseFrameCount(maskReuseFrameCount)
             updateSettings { $0.maskReuseFrameCount = self.maskReuseFrameCount }
         }
     }
 
-    @Published var backgroundColorEnabled = true {
+    @Published public var backgroundColorEnabled = true {
         didSet { updateSettings { $0.backgroundColorEnabled = self.backgroundColorEnabled } }
     }
 
-    @Published var backgroundBlurEnabled = false {
+    @Published public var backgroundBlurEnabled = false {
         didSet { updateSettings { $0.backgroundBlurEnabled = self.backgroundBlurEnabled } }
     }
 
-    @Published var backgroundMediaEnabled = false {
+    @Published public var backgroundMediaEnabled = false {
         didSet {
             updateSettings { $0.backgroundMediaEnabled = self.backgroundMediaEnabled }
             updateBackgroundMediaPlaybackState()
         }
     }
 
-    @Published var backgroundBlurRadius: Double = 18 {
+    @Published public var backgroundBlurRadius: Double = 18 {
         didSet { updateSettings { $0.backgroundBlurRadius = self.backgroundBlurRadius } }
     }
 
-    @Published var backgroundPreset: BackgroundPreset = .black {
+    @Published public var backgroundPreset: BackgroundPreset = .black {
         didSet { updateSettings { $0.background = self.backgroundPreset } }
     }
 
-    @Published var backgroundMediaBlurRadius: Double = 0 {
+    @Published public var backgroundMediaBlurRadius: Double = 0 {
         didSet { updateSettings { $0.backgroundMediaBlurRadius = self.backgroundMediaBlurRadius } }
     }
 
-    @Published var backgroundMediaFit: BackgroundMediaFit = .fill {
+    @Published public var backgroundMediaFit: BackgroundMediaFit = .fill {
         didSet { updateSettings { $0.backgroundMediaFit = self.backgroundMediaFit } }
     }
 
-    @Published var backgroundMediaAlignment: BackgroundContentAlignment = .middleCenter {
+    @Published public var backgroundMediaAlignment: BackgroundContentAlignment = .middleCenter {
         didSet { updateSettings { $0.backgroundMediaAlignment = self.backgroundMediaAlignment } }
     }
 
-    @Published var windowBackgroundFit: BackgroundMediaFit = .fill {
+    @Published public var windowBackgroundFit: BackgroundMediaFit = .fill {
         didSet { updateSettings { $0.windowBackgroundFit = self.windowBackgroundFit } }
     }
 
-    @Published var windowBackgroundAlignment: BackgroundContentAlignment = .middleCenter {
+    @Published public var windowBackgroundAlignment: BackgroundContentAlignment = .middleCenter {
         didSet { updateSettings { $0.windowBackgroundAlignment = self.windowBackgroundAlignment } }
     }
 
-    @Published var outputFrameSize: OutputFrameSize = SharedFrameConfiguration.outputFrameSize {
+    @Published public var outputFrameSize: OutputFrameSize = SharedFrameConfiguration.outputFrameSize {
         didSet {
             guard oldValue != outputFrameSize else { return }
 
@@ -700,51 +482,51 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    @Published var outputFlipHorizontal = false {
+    @Published public var outputFlipHorizontal = false {
         didSet { updateSettings { $0.outputFlipHorizontal = self.outputFlipHorizontal } }
     }
 
-    @Published var outputFlipVertical = false {
+    @Published public var outputFlipVertical = false {
         didSet { updateSettings { $0.outputFlipVertical = self.outputFlipVertical } }
     }
 
-    @Published var ntscEffectEnabled = false {
+    @Published public var ntscEffectEnabled = false {
         didSet { updateSettings { $0.ntscEffectEnabled = self.ntscEffectEnabled } }
     }
 
-    @Published var ntscPreset: NtscPreset = .medium {
+    @Published public var ntscPreset: NtscPreset = .medium {
         didSet { updateSettings { $0.ntscPreset = self.ntscPreset } }
     }
 
-    @Published private(set) var isRunning = false
-    @Published private(set) var statusText = "Idle"
-    @Published private(set) var measuredFramesPerSecond: Double = 0
-    @Published private(set) var selectedWindowBackgroundTitle: String?
-    @Published private(set) var selectedWindowBackgroundOptions: [WindowBackgroundOption] = []
-    @Published private(set) var activeWindowBackgroundIndex: Int?
-    @Published private(set) var windowBackgroundStatusText = "Color background"
-    @Published private(set) var selectedBackgroundMediaTitle: String?
-    @Published private(set) var selectedBackgroundMediaKind: BackgroundMediaKind?
-    @Published private(set) var backgroundMediaStatusText = "No media selected"
+    @Published public private(set) var isRunning = false
+    @Published public private(set) var statusText = "Idle"
+    @Published public private(set) var measuredFramesPerSecond: Double = 0
+    @Published public private(set) var selectedWindowBackgroundTitle: String?
+    @Published public private(set) var selectedWindowBackgroundOptions: [WindowBackgroundOption] = []
+    @Published public private(set) var activeWindowBackgroundIndex: Int?
+    @Published public private(set) var windowBackgroundStatusText = "Color background"
+    @Published public private(set) var selectedBackgroundMediaTitle: String?
+    @Published public private(set) var selectedBackgroundMediaKind: BackgroundMediaKind?
+    @Published public private(set) var backgroundMediaStatusText = "No media selected"
 
-    var previewHandler: ((CMSampleBuffer) -> Void)?
+    public var previewHandler: ((CMSampleBuffer) -> Void)?
 
-    var hasWindowBackgroundSelection: Bool {
+    public var hasWindowBackgroundSelection: Bool {
         !selectedWindowBackgroundOptions.isEmpty
     }
 
-    var hasBackgroundMediaSelection: Bool {
+    public var hasBackgroundMediaSelection: Bool {
         selectedBackgroundMediaKind != nil
     }
 
-    func setSpeechCaptionOverlay(text: String?, configuration: SpeechToTextCaptionRenderConfiguration) {
+    public func setSpeechCaptionOverlay(text: String?, configuration: CaptionRenderConfiguration) {
         updateSettings { settings in
             settings.speechCaptionText = text
             settings.speechCaptionConfiguration = configuration
         }
     }
 
-    var activeWindowBackgroundOption: WindowBackgroundOption? {
+    public var activeWindowBackgroundOption: WindowBackgroundOption? {
         guard let activeWindowBackgroundIndex,
               selectedWindowBackgroundOptions.indices.contains(activeWindowBackgroundIndex) else {
             return nil
@@ -756,12 +538,8 @@ final class CameraPipeline: NSObject, ObservableObject {
     private let captureSession = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let captureQueue = DispatchQueue(label: "com.stylemac.Emyn.capture", qos: .userInitiated)
-    private let segmentationQueue = DispatchQueue(label: "com.stylemac.Emyn.segmentation", qos: .userInitiated)
     private let renderQueue = DispatchQueue(label: "com.stylemac.Emyn.render", qos: .userInteractive)
     private let settingsQueue = DispatchQueue(label: "com.stylemac.Emyn.settings")
-    private let screenCaptureQueue = DispatchQueue(label: "com.stylemac.Emyn.screen-capture", qos: .userInitiated)
-    private let maskLock = NSLock()
-    private let segmentationStateLock = NSLock()
     private let backgroundLock = NSLock()
     private let backgroundMediaLock = NSLock()
     private let imageOverlayLock = NSLock()
@@ -769,9 +547,8 @@ final class CameraPipeline: NSObject, ObservableObject {
 
     private let ciContext: CIContext
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
-    private let segmentationRequest = VNGeneratePersonSegmentationRequest()
+    private let backgroundRemover = PersonBackgroundRemover()
     private let frameWriter: SharedFrameWriter?
-    private static let screenCaptureBackgroundColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0)
     private static let windowBackgroundCycleFadeDuration: CFTimeInterval = 0.5
     private static let confettiParticleCount = 144
     private static let confettiReferenceOutputSize = CGSize(width: 1280, height: 720)
@@ -786,16 +563,8 @@ final class CameraPipeline: NSObject, ObservableObject {
     ]
 
     private var settings = ProcessingSettings()
-    private var latestMask: CIImage?
-    private var latestRenderMask: CIImage?
     private var outputPixelBufferPool: CVPixelBufferPool?
     private var outputPixelBufferPoolSize = CGSize(width: 0, height: 0)
-    private var analysisPixelBufferPool: CVPixelBufferPool?
-    private var analysisPixelBufferPoolSize = CGSize(width: 0, height: 0)
-    private var maskPixelBufferPool: CVPixelBufferPool?
-    private var maskPixelBufferPoolSize = CGSize(width: 0, height: 0)
-    private var renderMaskPixelBufferPool: CVPixelBufferPool?
-    private var renderMaskPixelBufferPoolSize = CGSize(width: 0, height: 0)
     private var ntscPixelBufferPool: CVPixelBufferPool?
     private var ntscPixelBufferPoolSize = CGSize(width: 0, height: 0)
     private var confettiOverlayPixelBufferPool: CVPixelBufferPool?
@@ -805,12 +574,11 @@ final class CameraPipeline: NSObject, ObservableObject {
     private var outputFormatDescription: CMFormatDescription?
     private var outputFormatDescriptionSize = CGSize(width: 0, height: 0)
     private var frameCounter: UInt64 = 0
-    private var segmentationInFlight = false
     private var renderedFrameCounter = 0
     private var ntscEffectFrameCounter: UInt64 = 0
     private var didReportNtscEffectError = false
     private var lastFPSUpdate = CACurrentMediaTime()
-    private var windowBackgroundStream: SCStream?
+    private let windowBackgroundStream = WindowCaptureStream()
     private var latestWindowBackgroundPixelBuffer: CVPixelBuffer?
     private var windowBackgroundFadeSourcePixelBuffer: CVPixelBuffer?
     private var windowBackgroundFadeStartTime: CFTimeInterval?
@@ -825,7 +593,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     private var imageOverlayCache: [String: CIImage] = [:]
     private var outputFrameSizeObserverTimer: DispatchSourceTimer?
 
-    override init() {
+    public override init() {
         if let metalDevice = MTLCreateSystemDefaultDevice() {
             ciContext = CIContext(
                 mtlDevice: metalDevice,
@@ -840,8 +608,9 @@ final class CameraPipeline: NSObject, ObservableObject {
         super.init()
 
         settings.outputFrameSize = outputFrameSize
-        segmentationRequest.qualityLevel = quality.visionQualityLevel
-        segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        backgroundRemover.onError = { [weak self] error in
+            self?.setStatus(error.localizedDescription)
+        }
         let outputSize = CGSize(width: outputFrameSize.width, height: outputFrameSize.height)
         outputPixelBufferPool = Self.makePixelBufferPool(
             width: outputFrameSize.width,
@@ -849,14 +618,6 @@ final class CameraPipeline: NSObject, ObservableObject {
             pixelFormat: SharedFrameConfiguration.pixelFormat
         )
         outputPixelBufferPoolSize = outputSize
-        let analysisDimensions = analysisResolution.pixelDimensions(for: outputFrameSize)
-        analysisPixelBufferPool = Self.makePixelBufferPool(
-            width: analysisDimensions.width,
-            height: analysisDimensions.height,
-            pixelFormat: kCVPixelFormatType_32BGRA
-        )
-        analysisPixelBufferPoolSize = CGSize(width: analysisDimensions.width, height: analysisDimensions.height)
-
         CMVideoFormatDescriptionCreate(
             allocator: kCFAllocatorDefault,
             codecType: SharedFrameConfiguration.pixelFormat,
@@ -879,7 +640,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         clearBackgroundMediaResources()
     }
 
-    func refreshCameras() {
+    public func refreshCameras() {
         let devices = Self.discoverCameraDevices()
         let infos = devices.map {
             CameraDeviceInfo(id: $0.uniqueID, name: $0.localizedName, detail: $0.deviceType.rawValue)
@@ -909,7 +670,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         outputFrameSize = sharedOutputFrameSize
     }
 
-    func start() {
+    public func start() {
         refreshCameras()
 
         switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -932,7 +693,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    func stop() {
+    public func stop() {
         setBackgroundMediaPlayback(shouldPlay: false)
 
         captureQueue.async {
@@ -949,7 +710,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    func selectBackgroundMedia(url: URL) {
+    public func selectBackgroundMedia(url: URL) {
         do {
             let kind = try Self.mediaKind(for: url)
             switch kind {
@@ -969,7 +730,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    func clearBackgroundMedia() {
+    public func clearBackgroundMedia() {
         clearBackgroundMediaResources()
         selectedBackgroundMediaTitle = nil
         selectedBackgroundMediaKind = nil
@@ -977,11 +738,11 @@ final class CameraPipeline: NSObject, ObservableObject {
         backgroundMediaEnabled = false
     }
 
-    func selectWindowBackground(_ option: WindowBackgroundOption) {
+    public func selectWindowBackground(_ option: WindowBackgroundOption) {
         selectWindowBackgrounds([option])
     }
 
-    func selectWindowBackgrounds(_ options: [WindowBackgroundOption]) {
+    public func selectWindowBackgrounds(_ options: [WindowBackgroundOption]) {
         let uniqueOptions = Self.deduplicatedWindowOptions(options)
         guard !uniqueOptions.isEmpty else {
             clearWindowBackground()
@@ -994,7 +755,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         startActiveWindowBackgroundCapture(statusPrefix: "Starting")
     }
 
-    func removeWindowBackground(id: CGWindowID) {
+    public func removeWindowBackground(id: CGWindowID) {
         guard let removedIndex = selectedWindowBackgroundOptions.firstIndex(where: { $0.id == id }) else {
             return
         }
@@ -1015,7 +776,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    func moveWindowBackgrounds(from source: IndexSet, to destination: Int) {
+    public func moveWindowBackgrounds(from source: IndexSet, to destination: Int) {
         guard !source.isEmpty else { return }
 
         let activeID = activeWindowBackgroundOption?.id
@@ -1042,20 +803,18 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    func clearWindowBackground() {
+    public func clearWindowBackground() {
         selectedWindowBackgroundTitle = nil
         selectedWindowBackgroundOptions = []
         activeWindowBackgroundIndex = nil
         windowBackgroundStatusText = "Color background"
         clearLatestWindowBackgroundPixelBuffer()
 
-        screenCaptureQueue.async {
-            self.stopWindowBackgroundStream()
-        }
+        stopWindowBackgroundStream()
     }
 
     @discardableResult
-    func cycleWindowBackground() -> WindowBackgroundOption? {
+    public func cycleWindowBackground() -> WindowBackgroundOption? {
         guard selectedWindowBackgroundOptions.count > 1 else {
             return activeWindowBackgroundOption
         }
@@ -1070,42 +829,42 @@ final class CameraPipeline: NSObject, ObservableObject {
         return activeWindowBackgroundOption
     }
 
-    func setWindowBackgroundVisible(_ isVisible: Bool, animated: Bool) {
+    public func setWindowBackgroundVisible(_ isVisible: Bool, animated: Bool) {
         let now = CACurrentMediaTime()
         updateSettings { settings in
             settings.presentationEffects.setWindowBackgroundVisible(isVisible, animated: animated, at: now)
         }
     }
 
-    func toggleWindowBackgroundVisibility() {
+    public func toggleWindowBackgroundVisibility() {
         let now = CACurrentMediaTime()
         updateSettings { settings in
             settings.presentationEffects.toggleWindowBackgroundVisibility(at: now)
         }
     }
 
-    func togglePersonCompactPosition() {
+    public func togglePersonCompactPosition() {
         let now = CACurrentMediaTime()
         updateSettings { settings in
             settings.presentationEffects.togglePersonPosition(at: now)
         }
     }
 
-    func toggleWindowAndCompactPerson() {
+    public func toggleWindowAndCompactPerson() {
         let now = CACurrentMediaTime()
         updateSettings { settings in
             settings.presentationEffects.toggleWindowAndPersonPresentation(at: now)
         }
     }
 
-    func toggleWindowZoom() {
+    public func toggleWindowZoom() {
         let now = CACurrentMediaTime()
         updateSettings { settings in
             settings.presentationEffects.toggleWindowZoom(at: now)
         }
     }
 
-    func setWindowZoomCenter(_ center: CGPoint?) {
+    public func setWindowZoomCenter(_ center: CGPoint?) {
         let clampedCenter = CGPoint(
             x: max(0, min(1, center?.x ?? 0.5)),
             y: max(0, min(1, center?.y ?? 0.5))
@@ -1115,7 +874,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    func toggleImageOverlay(identifier: String, imagePath: String) {
+    public func toggleImageOverlay(identifier: String, imagePath: String) {
         updateSettings { settings in
             if settings.presentationEffects.activeImageOverlayPathsByID[identifier] == nil {
                 settings.presentationEffects.activeImageOverlayPathsByID[identifier] = imagePath
@@ -1125,18 +884,18 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    func triggerConfetti() {
+    public func triggerConfetti() {
         let now = CACurrentMediaTime()
         updateSettings { settings in
             settings.presentationEffects.triggerConfetti(at: now)
         }
     }
 
-    func toggleNtscEffect() {
+    public func toggleNtscEffect() {
         ntscEffectEnabled.toggle()
     }
 
-    func restart() {
+    public func restart() {
         stop()
         captureQueue.asyncAfter(deadline: .now() + 0.25) {
             self.configureAndStartCapture()
@@ -1359,67 +1118,21 @@ final class CameraPipeline: NSObject, ObservableObject {
     }
 
     private func scheduleSegmentation(for pixelBuffer: CVPixelBuffer) {
-        guard beginSegmentationIfPossible() else { return }
-
-        segmentationQueue.async {
-            defer { self.finishSegmentation() }
-            autoreleasepool {
-                self.performSegmentation(on: pixelBuffer)
-            }
-        }
-    }
-
-    private func performSegmentation(on pixelBuffer: CVPixelBuffer) {
         let settings = currentSettings()
-        let analysisDimensions = settings.analysisResolution.pixelDimensions(for: settings.outputFrameSize)
-        let analysisSize = CGSize(width: analysisDimensions.width, height: analysisDimensions.height)
-
-        guard let analysisPixelBuffer = makeAnalysisPixelBuffer(size: analysisSize) else {
-            return
-        }
-
-        let analysisImage = aspectFillImage(from: pixelBuffer, targetSize: analysisSize)
-        ciContext.render(
-            analysisImage,
-            to: analysisPixelBuffer,
-            bounds: CGRect(origin: .zero, size: analysisSize),
-            colorSpace: colorSpace
+        let outputSize = CGSize(
+            width: settings.outputFrameSize.width,
+            height: settings.outputFrameSize.height
         )
-
-        do {
-            let handler = VNImageRequestHandler(cvPixelBuffer: analysisPixelBuffer, orientation: .up)
-            try handler.perform([segmentationRequest])
-            guard let maskPixelBuffer = segmentationRequest.results?.first?.pixelBuffer else {
-                return
-            }
-
-            var newMask = normalizeExtent(CIImage(cvPixelBuffer: maskPixelBuffer))
-
-            if let previousMask = currentMask(), previousMask.extent.size == newMask.extent.size {
-                let newWeight = max(0.08, min(1.0, 1.0 - settings.temporalSmoothing))
-                newMask = newMask.applyingFilter("CIMix", parameters: [
-                    kCIInputBackgroundImageKey: previousMask,
-                    kCIInputAmountKey: newWeight
-                ])
-            }
-
-            guard let materializedMask = materializedMaskImage(from: newMask) else {
-                return
-            }
-
-            let outputSize = CGSize(width: settings.outputFrameSize.width, height: settings.outputFrameSize.height)
-            guard let materializedRenderMask = materializedRenderMaskImage(
-                from: materializedMask,
-                to: CGRect(origin: .zero, size: outputSize),
-                blurRadius: settings.maskBlurRadius
-            ) else {
-                return
-            }
-
-            setCurrentMasks(mask: materializedMask, renderMask: materializedRenderMask)
-        } catch {
-            setStatus(error.localizedDescription)
-        }
+        backgroundRemover.process(
+            pixelBuffer: pixelBuffer,
+            configuration: PersonSegmentationConfiguration(
+                quality: settings.quality,
+                analysisResolution: settings.analysisResolution,
+                temporalSmoothing: settings.temporalSmoothing,
+                maskBlurRadius: settings.maskBlurRadius,
+                outputSize: outputSize
+            )
+        )
     }
 
     private func scheduleRender(pixelBuffer: CVPixelBuffer, timestamp: CMTime) {
@@ -1952,7 +1665,7 @@ final class CameraPipeline: NSObject, ObservableObject {
 
     private func drawSpeechCaption(
         _ text: String,
-        configuration: SpeechToTextCaptionRenderConfiguration,
+        configuration: CaptionRenderConfiguration,
         in context: CGContext,
         outputExtent: CGRect,
         flipHorizontal: Bool = false,
@@ -2425,67 +2138,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         return pixelBuffer
     }
 
-    private func makeAnalysisPixelBuffer(size: CGSize) -> CVPixelBuffer? {
-        if analysisPixelBufferPool == nil || analysisPixelBufferPoolSize != size {
-            analysisPixelBufferPool = Self.makePixelBufferPool(
-                width: Int(size.width),
-                height: Int(size.height),
-                pixelFormat: kCVPixelFormatType_32BGRA
-            )
-            analysisPixelBufferPoolSize = size
-        }
-
-        guard let analysisPixelBufferPool else { return nil }
-        var pixelBuffer: CVPixelBuffer?
-        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, analysisPixelBufferPool, &pixelBuffer)
-        return pixelBuffer
-    }
-
-    private func makeMaskPixelBuffer(size: CGSize) -> CVPixelBuffer? {
-        let width = Int(size.width.rounded())
-        let height = Int(size.height.rounded())
-        guard width > 0, height > 0 else { return nil }
-
-        let integralSize = CGSize(width: width, height: height)
-        if maskPixelBufferPool == nil || maskPixelBufferPoolSize != integralSize {
-            maskPixelBufferPool = Self.makePixelBufferPool(
-                width: width,
-                height: height,
-                pixelFormat: kCVPixelFormatType_OneComponent8,
-                bitmapCompatible: false
-            )
-            maskPixelBufferPoolSize = integralSize
-        }
-
-        guard let maskPixelBufferPool else { return nil }
-        var pixelBuffer: CVPixelBuffer?
-        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, maskPixelBufferPool, &pixelBuffer)
-        return pixelBuffer
-    }
-
-    private func makeRenderMaskPixelBuffer(size: CGSize) -> CVPixelBuffer? {
-        let width = Int(size.width.rounded())
-        let height = Int(size.height.rounded())
-        guard width > 0, height > 0 else { return nil }
-
-        let integralSize = CGSize(width: width, height: height)
-        if renderMaskPixelBufferPool == nil || renderMaskPixelBufferPoolSize != integralSize {
-            renderMaskPixelBufferPool = Self.makePixelBufferPool(
-                width: width,
-                height: height,
-                pixelFormat: kCVPixelFormatType_OneComponent8,
-                bitmapCompatible: false
-            )
-            renderMaskPixelBufferPoolSize = integralSize
-        }
-
-        guard let renderMaskPixelBufferPool else { return nil }
-        var pixelBuffer: CVPixelBuffer?
-        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, renderMaskPixelBufferPool, &pixelBuffer)
-        return pixelBuffer
-    }
-
-    private func makeNtscPixelBuffer(width: Int, height: Int) -> CVPixelBuffer? {
+     private func makeNtscPixelBuffer(width: Int, height: Int) -> CVPixelBuffer? {
         let integralSize = CGSize(width: width, height: height)
         if ntscPixelBufferPool == nil || ntscPixelBufferPoolSize != integralSize {
             ntscPixelBufferPool = Self.makePixelBufferPool(
@@ -2544,39 +2197,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         return pixelBuffer
     }
 
-    private func materializedMaskImage(from mask: CIImage) -> CIImage? {
-        let normalizedMask = normalizeExtent(mask)
-        let maskSize = normalizedMask.extent.size
-        guard let pixelBuffer = makeMaskPixelBuffer(size: maskSize) else {
-            return nil
-        }
-
-        ciContext.render(
-            normalizedMask,
-            to: pixelBuffer,
-            bounds: CGRect(origin: .zero, size: maskSize),
-            colorSpace: nil
-        )
-
-        return CIImage(cvPixelBuffer: pixelBuffer)
-    }
-
-    private func materializedRenderMaskImage(from mask: CIImage, to extent: CGRect, blurRadius: Double) -> CIImage? {
-        guard let pixelBuffer = makeRenderMaskPixelBuffer(size: extent.size) else {
-            return nil
-        }
-
-        ciContext.render(
-            upscale(mask: mask, to: extent, blurRadius: blurRadius),
-            to: pixelBuffer,
-            bounds: extent,
-            colorSpace: nil
-        )
-
-        return CIImage(cvPixelBuffer: pixelBuffer)
-    }
-
-    private func makeSampleBuffer(from pixelBuffer: CVPixelBuffer, timestamp: CMTime) -> CMSampleBuffer? {
+     private func makeSampleBuffer(from pixelBuffer: CVPixelBuffer, timestamp: CMTime) -> CMSampleBuffer? {
         let formatSize = CGSize(
             width: CVPixelBufferGetWidth(pixelBuffer),
             height: CVPixelBufferGetHeight(pixelBuffer)
@@ -2616,10 +2237,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         outputPixelBufferPoolSize = size
         updateOutputFormatDescription(size: size)
 
-        analysisPixelBufferPool = nil
-        analysisPixelBufferPoolSize = .zero
-        renderMaskPixelBufferPool = nil
-        renderMaskPixelBufferPoolSize = .zero
+        backgroundRemover.resetResources()
         ntscPixelBufferPool = nil
         ntscPixelBufferPoolSize = .zero
         confettiOverlayPixelBufferPool = nil
@@ -2681,51 +2299,19 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    private func currentMask() -> CIImage? {
-        maskLock.lock()
-        defer { maskLock.unlock() }
-        return latestMask
-    }
-
     private func currentRenderMask() -> CIImage? {
-        maskLock.lock()
-        defer { maskLock.unlock() }
-        return latestRenderMask
-    }
-
-    private func setCurrentMasks(mask: CIImage, renderMask: CIImage) {
-        maskLock.lock()
-        latestMask = mask
-        latestRenderMask = renderMask
-        maskLock.unlock()
+        backgroundRemover.currentRenderMask()
     }
 
     private func refreshCurrentRenderMask(blurRadius: Double, outputFrameSize: OutputFrameSize) {
-        segmentationQueue.async {
-            guard let mask = self.currentMask() else { return }
-
-            let outputSize = CGSize(width: outputFrameSize.width, height: outputFrameSize.height)
-            guard let renderMask = self.materializedRenderMaskImage(
-                from: mask,
-                to: CGRect(origin: .zero, size: outputSize),
-                blurRadius: blurRadius
-            ) else {
-                return
-            }
-
-            self.maskLock.lock()
-            if self.latestMask === mask {
-                self.latestRenderMask = renderMask
-            }
-            self.maskLock.unlock()
-        }
+        backgroundRemover.refreshRenderMask(
+            outputSize: CGSize(width: outputFrameSize.width, height: outputFrameSize.height),
+            blurRadius: blurRadius
+        )
     }
 
     private func clearMask() {
-        maskLock.lock()
-        latestMask = nil
-        latestRenderMask = nil
-        maskLock.unlock()
+        backgroundRemover.clear()
     }
 
     private func currentBackgroundMediaImage() -> CIImage? {
@@ -2868,47 +2454,37 @@ final class CameraPipeline: NSObject, ObservableObject {
     }
 
     private func startWindowBackgroundCapture(window: SCWindow, title: String, animated: Bool) {
-        screenCaptureQueue.async {
-            self.stopWindowBackgroundStream()
-            if animated {
-                self.prepareWindowBackgroundCycleFade()
-            } else {
-                self.clearLatestWindowBackgroundPixelBuffer()
+        if animated {
+            prepareWindowBackgroundCycleFade()
+        } else {
+            clearLatestWindowBackgroundPixelBuffer()
+        }
+
+        windowBackgroundStream.onFrame = { [weak self] pixelBuffer in
+            self?.setLatestWindowBackgroundPixelBuffer(pixelBuffer)
+        }
+        windowBackgroundStream.onStarted = { [weak self] in
+            DispatchQueue.main.async {
+                self?.selectedWindowBackgroundTitle = title
+                self?.windowBackgroundStatusText = "Using \(title)"
             }
-
-            let filter = SCContentFilter(desktopIndependentWindow: window)
-            let configuration = self.makeWindowBackgroundStreamConfiguration(for: window.frame)
-            let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
-
-            do {
-                try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: self.screenCaptureQueue)
-                self.windowBackgroundStream = stream
-                stream.startCapture { error in
-                    self.screenCaptureQueue.async {
-                        guard self.windowBackgroundStream === stream else { return }
-
-                        if let error {
-                            self.windowBackgroundStream = nil
-                            self.clearLatestWindowBackgroundPixelBuffer()
-                            DispatchQueue.main.async {
-                                self.selectedWindowBackgroundTitle = nil
-                                self.windowBackgroundStatusText = error.localizedDescription
-                            }
-                        } else {
-                            DispatchQueue.main.async {
-                                self.selectedWindowBackgroundTitle = title
-                                self.windowBackgroundStatusText = "Using \(title)"
-                            }
-                        }
-                    }
-                }
-            } catch {
-                self.clearLatestWindowBackgroundPixelBuffer()
-                DispatchQueue.main.async {
+        }
+        windowBackgroundStream.onStopped = { [weak self] error in
+            guard let self else { return }
+            self.clearLatestWindowBackgroundPixelBuffer()
+            DispatchQueue.main.async {
+                if let error {
+                    self.selectedWindowBackgroundTitle = nil
                     self.windowBackgroundStatusText = error.localizedDescription
                 }
             }
         }
+        let frameSize = currentSettings().outputFrameSize
+        windowBackgroundStream.start(
+            window: window,
+            maximumSize: CGSize(width: frameSize.width, height: frameSize.height),
+            pixelFormat: SharedFrameConfiguration.pixelFormat
+        )
     }
 
     private func windowBackgroundTitle(
@@ -2931,70 +2507,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     }
 
     private func stopWindowBackgroundStream() {
-        guard let stream = windowBackgroundStream else {
-            return
-        }
-
-        windowBackgroundStream = nil
-        stream.stopCapture { _ in }
-    }
-
-    private func makeWindowBackgroundStreamConfiguration(for frame: CGRect) -> SCStreamConfiguration {
-        let configuration = SCStreamConfiguration()
-        let captureSize = Self.windowBackgroundCaptureSize(
-            for: frame,
-            outputFrameSize: currentSettings().outputFrameSize
-        )
-        configuration.width = captureSize.width
-        configuration.height = captureSize.height
-        configuration.pixelFormat = SharedFrameConfiguration.pixelFormat
-        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
-        configuration.queueDepth = 3
-        configuration.showsCursor = false
-        configuration.scalesToFit = true
-        configuration.preservesAspectRatio = true
-        configuration.ignoreShadowsSingleWindow = true
-        configuration.shouldBeOpaque = false
-        configuration.backgroundColor = Self.screenCaptureBackgroundColor
-        return configuration
-    }
-
-    private static func windowBackgroundCaptureSize(
-        for frame: CGRect,
-        outputFrameSize: OutputFrameSize
-    ) -> (width: Int, height: Int) {
-        let scale = backingScaleFactor(for: frame)
-        return WindowBackgroundCaptureSizer.captureSize(
-            rawWidth: frame.width * scale,
-            rawHeight: frame.height * scale,
-            maxWidth: outputFrameSize.width,
-            maxHeight: outputFrameSize.height
-        )
-    }
-
-    private static func backingScaleFactor(for frame: CGRect) -> CGFloat {
-        let center = CGPoint(x: frame.midX, y: frame.midY)
-        return NSScreen.screens.first { $0.frame.contains(center) }?.backingScaleFactor
-            ?? NSScreen.main?.backingScaleFactor
-            ?? 2
-    }
-
-    private func beginSegmentationIfPossible() -> Bool {
-        segmentationStateLock.lock()
-        defer { segmentationStateLock.unlock() }
-
-        guard !segmentationInFlight else {
-            return false
-        }
-
-        segmentationInFlight = true
-        return true
-    }
-
-    private func finishSegmentation() {
-        segmentationStateLock.lock()
-        segmentationInFlight = false
-        segmentationStateLock.unlock()
+        windowBackgroundStream.stop()
     }
 
     private func setStatus(_ status: String) {
@@ -3019,7 +2532,7 @@ final class CameraPipeline: NSObject, ObservableObject {
 }
 
 extension CameraPipeline: AVCaptureVideoDataOutputSampleBufferDelegate {
-    func captureOutput(
+    public func captureOutput(
         _ output: AVCaptureOutput,
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
@@ -3030,7 +2543,7 @@ extension CameraPipeline: AVCaptureVideoDataOutputSampleBufferDelegate {
 
         frameCounter += 1
         let settings = currentSettings()
-        let shouldRefreshMask = currentMask() == nil
+        let shouldRefreshMask = !backgroundRemover.hasMask
             || frameCounter.isMultiple(of: UInt64(max(1, settings.maskReuseFrameCount + 1)))
 
         if settings.backgroundRemovalEnabled && shouldRefreshMask {
@@ -3041,43 +2554,5 @@ extension CameraPipeline: AVCaptureVideoDataOutputSampleBufferDelegate {
             pixelBuffer: pixelBuffer,
             timestamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         )
-    }
-}
-
-extension CameraPipeline: SCStreamOutput, SCStreamDelegate {
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen,
-              windowBackgroundStream === stream,
-              sampleBuffer.isValid,
-              Self.isCompleteOrIdleScreenCaptureFrame(sampleBuffer),
-              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            return
-        }
-
-        setLatestWindowBackgroundPixelBuffer(pixelBuffer)
-    }
-
-    func stream(_ stream: SCStream, didStopWithError error: Error) {
-        screenCaptureQueue.async {
-            guard self.windowBackgroundStream === stream else { return }
-
-            self.windowBackgroundStream = nil
-            self.clearLatestWindowBackgroundPixelBuffer()
-            DispatchQueue.main.async {
-                self.selectedWindowBackgroundTitle = nil
-                self.windowBackgroundStatusText = error.localizedDescription
-            }
-        }
-    }
-
-    private static func isCompleteOrIdleScreenCaptureFrame(_ sampleBuffer: CMSampleBuffer) -> Bool {
-        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
-                as? [[SCStreamFrameInfo: Any]],
-              let rawStatus = attachments.first?[SCStreamFrameInfo.status] as? Int,
-              let status = SCFrameStatus(rawValue: rawStatus) else {
-            return true
-        }
-
-        return status == .complete || status == .idle || status == .started
     }
 }

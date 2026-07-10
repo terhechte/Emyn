@@ -6,20 +6,22 @@ import Foundation
 import CTranscribe
 #endif
 
-final class SpeechToTextInputLevel: ObservableObject {
-    @Published private(set) var value = 0.0
+public final class SpeechToTextInputLevel: ObservableObject {
+    @Published public private(set) var value = 0.0
 
-    func update(_ level: Double) {
+    public init() {}
+
+    public func update(_ level: Double) {
         value = max(0, min(1, level))
     }
 }
 
-final class SpeechToTextTranscriber: ObservableObject {
-    @Published private(set) var transcribedText = ""
-    @Published private(set) var statusText = "Speech model not loaded."
-    @Published private(set) var modelStatusText = "Speech model not loaded."
-    @Published private(set) var isTranscribing = false
-    let inputLevel = SpeechToTextInputLevel()
+public final class SpeechToTextTranscriber: ObservableObject {
+    @Published public private(set) var transcribedText = ""
+    @Published public private(set) var statusText = "Speech model not loaded."
+    @Published public private(set) var modelStatusText = "Speech model not loaded."
+    @Published public private(set) var isTranscribing = false
+    public let inputLevel = SpeechToTextInputLevel()
 
     private let queue = DispatchQueue(label: "com.emyn.speech-to-text.transcriber")
     private lazy var audioCapture = SpeechToTextAudioCapture { [weak self] samples in
@@ -69,7 +71,9 @@ final class SpeechToTextTranscriber: ObservableObject {
     private let finalSilenceSamples = 11_200
     private let maximumBufferedSamples = 160_000
 
-    func apply(
+    public init() {}
+
+    public func apply(
         model selectedModel: SpeechToTextModelDescriptor,
         microphoneID: String,
         isEnabled: Bool,
@@ -105,12 +109,12 @@ final class SpeechToTextTranscriber: ObservableObject {
         }
     }
 
-    func loadModelIfAvailable(_ selectedModel: SpeechToTextModelDescriptor) {
+    public func loadModelIfAvailable(_ selectedModel: SpeechToTextModelDescriptor) {
         desiredModel = selectedModel
         ensureModelLoaded(selectedModel)
     }
 
-    func stopTranscribing(clearText: Bool) {
+    public func stopTranscribing(clearText: Bool) {
         audioCapture.stop()
         advancePublicationGeneration()
         queue.async { [weak self] in

@@ -3,14 +3,14 @@ import CoreVideo
 import Darwin
 import Foundation
 
-enum OutputFrameSize: String, CaseIterable, Identifiable {
+public enum OutputFrameSize: String, CaseIterable, Identifiable {
     case p540 = "960x540"
     case p720 = "1280x720"
     case p1080 = "1920x1080"
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var width: Int {
+    public var width: Int {
         switch self {
         case .p540:
             return 960
@@ -21,7 +21,7 @@ enum OutputFrameSize: String, CaseIterable, Identifiable {
         }
     }
 
-    var height: Int {
+    public var height: Int {
         switch self {
         case .p540:
             return 540
@@ -32,7 +32,7 @@ enum OutputFrameSize: String, CaseIterable, Identifiable {
         }
     }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .p540:
             return "540p"
@@ -43,19 +43,19 @@ enum OutputFrameSize: String, CaseIterable, Identifiable {
         }
     }
 
-    var dimensionsTitle: String {
+    public var dimensionsTitle: String {
         "\(width)x\(height)"
     }
 
-    var bytesPerRow: Int {
+    public var bytesPerRow: Int {
         width * SharedFrameConfiguration.bytesPerPixel
     }
 
-    var frameByteCount: Int {
+    public var frameByteCount: Int {
         bytesPerRow * height
     }
 
-    init?(width: Int, height: Int) {
+    public init?(width: Int, height: Int) {
         guard let size = Self.allCases.first(where: { $0.width == width && $0.height == height }) else {
             return nil
         }
@@ -64,22 +64,22 @@ enum OutputFrameSize: String, CaseIterable, Identifiable {
     }
 }
 
-enum SharedFrameConfiguration {
-    static let appGroupIdentifier = "group.com.stylemac.Emyn"
-    static let sharedFileName = "VirtualCameraFrame.dat"
-    static let virtualCameraName = "Emyn Virtual Camera"
-    static let systemExtensionBundleIdentifier = "com.stylemac.Emyn.VirtualCameraExtension"
-    static let outputFrameSizeDefaultsKey = "OutputFrameSize"
-    static let defaultOutputFrameSize: OutputFrameSize = .p720
+public enum SharedFrameConfiguration {
+    public static let appGroupIdentifier = "group.com.stylemac.Emyn"
+    public static let sharedFileName = "VirtualCameraFrame.dat"
+    public static let virtualCameraName = "Emyn Virtual Camera"
+    public static let systemExtensionBundleIdentifier = "com.stylemac.Emyn.VirtualCameraExtension"
+    public static let outputFrameSizeDefaultsKey = "OutputFrameSize"
+    public static let defaultOutputFrameSize: OutputFrameSize = .p720
 
-    static let bytesPerPixel = 4
-    static let headerByteCount = 64
-    static let pixelFormat = kCVPixelFormatType_32BGRA
+    public static let bytesPerPixel = 4
+    public static let headerByteCount = 64
+    public static let pixelFormat = kCVPixelFormatType_32BGRA
 
-    static let magic: UInt32 = 0x454D_594E
-    static let version: UInt32 = 1
+    public static let magic: UInt32 = 0x454D_594E
+    public static let version: UInt32 = 1
 
-    static var outputFrameSize: OutputFrameSize {
+    public static var outputFrameSize: OutputFrameSize {
         get {
             outputFrameSize(from: sharedDefaults)
         }
@@ -90,33 +90,33 @@ enum SharedFrameConfiguration {
         }
     }
 
-    static func synchronizedOutputFrameSize() -> OutputFrameSize {
+    public static func synchronizedOutputFrameSize() -> OutputFrameSize {
         let defaults = sharedDefaults
         _ = defaults.synchronize()
         return outputFrameSize(from: defaults)
     }
 
-    static var width: Int {
+    public static var width: Int {
         outputFrameSize.width
     }
 
-    static var height: Int {
+    public static var height: Int {
         outputFrameSize.height
     }
 
-    static var bytesPerRow: Int {
+    public static var bytesPerRow: Int {
         outputFrameSize.bytesPerRow
     }
 
-    static var frameByteCount: Int {
+    public static var frameByteCount: Int {
         outputFrameSize.frameByteCount
     }
 
-    static var maximumFrameByteCount: Int {
+    public static var maximumFrameByteCount: Int {
         OutputFrameSize.allCases.map(\.frameByteCount).max() ?? defaultOutputFrameSize.frameByteCount
     }
 
-    static var fileByteCount: Int {
+    public static var fileByteCount: Int {
         headerByteCount + maximumFrameByteCount
     }
 
@@ -134,13 +134,13 @@ enum SharedFrameConfiguration {
     }
 }
 
-enum SharedFrameStoreError: LocalizedError {
+public enum SharedFrameStoreError: LocalizedError {
     case missingAppGroupContainer
     case couldNotOpenFile(String)
     case couldNotResizeFile(String)
     case couldNotMapFile(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .missingAppGroupContainer:
             return "The shared app group container is unavailable."
@@ -154,9 +154,9 @@ enum SharedFrameStoreError: LocalizedError {
     }
 }
 
-struct SharedFrameSnapshot {
-    let sequence: UInt64
-    let timestampNanoseconds: UInt64
+public struct SharedFrameSnapshot {
+    public let sequence: UInt64
+    public let timestampNanoseconds: UInt64
 }
 
 final class SharedFrameMappedFile {
@@ -241,7 +241,7 @@ final class SharedFrameMappedFile {
     }
 }
 
-final class SharedFrameWriter {
+public final class SharedFrameWriter {
     private enum Offset {
         static let magic = 0
         static let version = 4
@@ -256,12 +256,12 @@ final class SharedFrameWriter {
 
     private let mappedFile: SharedFrameMappedFile
 
-    init() throws {
+    public init() throws {
         mappedFile = try SharedFrameMappedFile(createIfNeeded: true)
         initializeHeader()
     }
 
-    func publish(pixelBuffer: CVPixelBuffer, presentationTime: CMTime) {
+    public func publish(pixelBuffer: CVPixelBuffer, presentationTime: CMTime) {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         let bytesPerRow = width * SharedFrameConfiguration.bytesPerPixel
@@ -340,7 +340,7 @@ final class SharedFrameWriter {
     }
 }
 
-final class SharedFrameReader {
+public final class SharedFrameReader {
     private enum Offset {
         static let magic = 0
         static let version = 4
@@ -365,11 +365,11 @@ final class SharedFrameReader {
         var payloadByteCount: UInt64
     }
 
-    init() throws {
+    public init() throws {
         mappedFile = try SharedFrameMappedFile(createIfNeeded: false)
     }
 
-    func copyLatestFrame(to pixelBuffer: CVPixelBuffer) -> SharedFrameSnapshot? {
+    public func copyLatestFrame(to pixelBuffer: CVPixelBuffer) -> SharedFrameSnapshot? {
         guard CVPixelBufferGetPixelFormatType(pixelBuffer) == SharedFrameConfiguration.pixelFormat else {
             return nil
         }

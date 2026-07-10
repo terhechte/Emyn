@@ -1,5 +1,5 @@
 import XCTest
-@testable import EmynPerformanceCore
+@testable import WindowCaptureKit
 
 final class WindowBackgroundCaptureSizerTests: XCTestCase {
     func testCapsSixteenByNineRetinaWindowAtOutputDimensions() {

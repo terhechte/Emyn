@@ -7,8 +7,13 @@
 
 import AppKit
 import AVFoundation
+import BackgroundRemovalKit
+import SharedFrameKit
 import SwiftUI
+import TranscriptionKit
 import UniformTypeIdentifiers
+import VideoCompositionKit
+import WindowCaptureKit
 
 private let selectedSettingsTabStorageKey = "settings.selectedTab.v1"
 
@@ -1696,7 +1701,7 @@ struct ContentView: View {
             text: isSpeechTestSentenceVisible
                 ? Self.speechTestSentence
                 : liveText.isEmpty ? nil : liveText,
-            configuration: speechToText.captionRenderConfiguration
+            configuration: CaptionRenderConfiguration(speechToText.captionRenderConfiguration)
         )
     }
 
@@ -1730,7 +1735,10 @@ struct ContentView: View {
         isSoftwareCursorPreviewVisible = false
         functionKeys.stopMonitoring()
         speechTranscriber.stopTranscribing(clearText: true)
-        pipeline.setSpeechCaptionOverlay(text: nil, configuration: speechToText.captionRenderConfiguration)
+        pipeline.setSpeechCaptionOverlay(
+            text: nil,
+            configuration: CaptionRenderConfiguration(speechToText.captionRenderConfiguration)
+        )
         windowControl.deactivate()
         pipeline.stop()
         pipeline.clearWindowBackground()
@@ -1759,6 +1767,10 @@ struct ContentView: View {
                 mappedTo: previewNSView,
                 fit: pipeline.windowBackgroundFit,
                 alignment: pipeline.windowBackgroundAlignment,
+                outputSize: CGSize(
+                    width: pipeline.outputFrameSize.width,
+                    height: pipeline.outputFrameSize.height
+                ),
                 excludeFunctionKeys: excludeFunctionKeysDuringWindowControl
             )
         }
@@ -1776,6 +1788,10 @@ struct ContentView: View {
             mappedTo: previewNSView,
             fit: pipeline.windowBackgroundFit,
             alignment: pipeline.windowBackgroundAlignment,
+            outputSize: CGSize(
+                width: pipeline.outputFrameSize.width,
+                height: pipeline.outputFrameSize.height
+            ),
             excludeFunctionKeys: excludeFunctionKeysDuringWindowControl
         )
     }
@@ -1914,6 +1930,10 @@ struct ContentView: View {
                 mappedTo: previewNSView,
                 fit: pipeline.windowBackgroundFit,
                 alignment: pipeline.windowBackgroundAlignment,
+                outputSize: CGSize(
+                    width: pipeline.outputFrameSize.width,
+                    height: pipeline.outputFrameSize.height
+                ),
                 excludeFunctionKeys: excludeFunctionKeysDuringWindowControl
             )
         }

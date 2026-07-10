@@ -4,20 +4,41 @@ import Combine
 import Foundation
 import SwiftUI
 
-struct SpeechToTextMicrophoneDescriptor: Identifiable, Hashable {
-    let id: String
-    let title: String
+public struct SpeechToTextMicrophoneDescriptor: Identifiable, Hashable, Sendable {
+    public let id: String
+    public let title: String
+
+    public init(id: String, title: String) {
+        self.id = id
+        self.title = title
+    }
 }
 
-struct SpeechToTextModelDescriptor: Identifiable, Hashable {
-    let id: String
-    let title: String
-    let detail: String
-    let repository: String
-    let filename: String
-    let byteSize: Int64
+public struct SpeechToTextModelDescriptor: Identifiable, Hashable, Sendable {
+    public let id: String
+    public let title: String
+    public let detail: String
+    public let repository: String
+    public let filename: String
+    public let byteSize: Int64
 
-    var downloadURL: URL {
+    public init(
+        id: String,
+        title: String,
+        detail: String,
+        repository: String,
+        filename: String,
+        byteSize: Int64
+    ) {
+        self.id = id
+        self.title = title
+        self.detail = detail
+        self.repository = repository
+        self.filename = filename
+        self.byteSize = byteSize
+    }
+
+    public var downloadURL: URL {
         var components = URLComponents()
         components.scheme = "https"
         components.host = "huggingface.co"
@@ -25,11 +46,11 @@ struct SpeechToTextModelDescriptor: Identifiable, Hashable {
         return components.url!
     }
 
-    var sizeTitle: String {
+    public var sizeTitle: String {
         ByteCountFormatter.string(fromByteCount: byteSize, countStyle: .file)
     }
 
-    var localFilename: String {
+    public var localFilename: String {
         if Self.builtIn.contains(where: { $0.repository == repository && $0.filename == filename }) {
             return filename.replacingOccurrences(of: "/", with: "__")
         }
@@ -39,15 +60,15 @@ struct SpeechToTextModelDescriptor: Identifiable, Hashable {
         return "\(sanitizedRepository)__\(sanitizedFilename)"
     }
 
-    var quantization: String {
+    public var quantization: String {
         Self.quantizationName(from: filename) ?? "Unknown"
     }
 
-    var isStreamingCapable: Bool {
+    public var isStreamingCapable: Bool {
         Self.streamingRepositories.contains(Self.normalizedRepository(repository))
     }
 
-    static let builtIn: [SpeechToTextModelDescriptor] = [
+    public static let builtIn: [SpeechToTextModelDescriptor] = [
         SpeechToTextModelDescriptor(
             id: "whisper-tiny-en-q4",
             title: "Whisper Tiny EN Q4",
@@ -98,7 +119,7 @@ struct SpeechToTextModelDescriptor: Identifiable, Hashable {
         )
     ]
 
-    static let streamingBuiltIn: [SpeechToTextModelDescriptor] = [
+    public static let streamingBuiltIn: [SpeechToTextModelDescriptor] = [
         SpeechToTextModelDescriptor(
             id: "handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf",
             title: "Nemotron 3.5 Asr Streaming 0.6B Q4_K_M",
@@ -157,7 +178,7 @@ struct SpeechToTextModelDescriptor: Identifiable, Hashable {
         )
     ]
 
-    static func descriptor(
+    public static func descriptor(
         for id: String,
         in availableModels: [SpeechToTextModelDescriptor] = builtIn
     ) -> SpeechToTextModelDescriptor {
@@ -166,7 +187,7 @@ struct SpeechToTextModelDescriptor: Identifiable, Hashable {
             ?? builtIn[0]
     }
 
-    static func catalogDescriptor(
+    public static func catalogDescriptor(
         repository: String,
         filename: String,
         byteSize: Int64
@@ -217,7 +238,7 @@ struct SpeechToTextModelDescriptor: Identifiable, Hashable {
         return "\(family) \(quantization) model from the transcribe.cpp catalog."
     }
 
-    static let preferredQuantizationOrder = ["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "F16", "BF16", "F32", "Unknown"]
+    public static let preferredQuantizationOrder = ["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0", "F16", "BF16", "F32", "Unknown"]
 
     private static let streamingRepositories: Set<String> = [
         "handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf",
@@ -229,14 +250,14 @@ struct SpeechToTextModelDescriptor: Identifiable, Hashable {
         "handy-computer/voxtral-mini-4b-realtime-2602-gguf"
     ]
 
-    static func quantizationName(from text: String) -> String? {
+    public static func quantizationName(from text: String) -> String? {
         let knownQuantizations = preferredQuantizationOrder
             .filter { $0 != "Unknown" }
             .sorted { $0.count > $1.count }
         return knownQuantizations.first { text.contains($0) }
     }
 
-    static func quantizationSortKey(_ quantization: String) -> (Int, String) {
+    public static func quantizationSortKey(_ quantization: String) -> (Int, String) {
         let rank = preferredQuantizationOrder.firstIndex(of: quantization) ?? preferredQuantizationOrder.count
         return (rank, quantization)
     }
@@ -248,15 +269,15 @@ struct SpeechToTextModelDescriptor: Identifiable, Hashable {
     }
 }
 
-enum SpeechToTextCaptionFont: String, CaseIterable, Identifiable {
+public enum SpeechToTextCaptionFont: String, CaseIterable, Identifiable, Sendable {
     case system
     case rounded
     case serif
     case monospaced
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .system: return "System"
         case .rounded: return "Rounded"
@@ -265,7 +286,7 @@ enum SpeechToTextCaptionFont: String, CaseIterable, Identifiable {
         }
     }
 
-    func nsFont(size: CGFloat, weight: NSFont.Weight = .semibold) -> NSFont {
+    public func nsFont(size: CGFloat, weight: NSFont.Weight = .semibold) -> NSFont {
         switch self {
         case .system:
             return NSFont.systemFont(ofSize: size, weight: weight)
@@ -280,7 +301,7 @@ enum SpeechToTextCaptionFont: String, CaseIterable, Identifiable {
         }
     }
 
-    func swiftUIFont(size: CGFloat) -> Font {
+    public func swiftUIFont(size: CGFloat) -> Font {
         switch self {
         case .system:
             return .system(size: size, weight: .semibold)
@@ -294,15 +315,15 @@ enum SpeechToTextCaptionFont: String, CaseIterable, Identifiable {
     }
 }
 
-enum SpeechToTextCaptionWidth: Double, CaseIterable, Identifiable {
+public enum SpeechToTextCaptionWidth: Double, CaseIterable, Identifiable, Sendable {
     case full = 1.0
     case eighty = 0.8
     case twoThirds = 0.66
     case half = 0.5
 
-    var id: Double { rawValue }
+    public var id: Double { rawValue }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .full: return "100%"
         case .eighty: return "80%"
@@ -312,7 +333,7 @@ enum SpeechToTextCaptionWidth: Double, CaseIterable, Identifiable {
     }
 }
 
-enum SpeechToTextCaptionAlignment: String, CaseIterable, Identifiable {
+public enum SpeechToTextCaptionAlignment: String, CaseIterable, Identifiable, Sendable {
     case topLeft
     case topCenter
     case topRight
@@ -323,9 +344,9 @@ enum SpeechToTextCaptionAlignment: String, CaseIterable, Identifiable {
     case bottomCenter
     case bottomRight
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var title: String {
+    public var title: String {
         switch self {
         case .topLeft: return "Top Left"
         case .topCenter: return "Top Center"
@@ -339,7 +360,7 @@ enum SpeechToTextCaptionAlignment: String, CaseIterable, Identifiable {
         }
     }
 
-    var swiftUIAlignment: Alignment {
+    public var swiftUIAlignment: Alignment {
         switch self {
         case .topLeft: return .topLeading
         case .topCenter: return .top
@@ -353,7 +374,7 @@ enum SpeechToTextCaptionAlignment: String, CaseIterable, Identifiable {
         }
     }
 
-    var textAlignment: TextAlignment {
+    public var textAlignment: TextAlignment {
         switch self {
         case .topLeft, .middleLeft, .bottomLeft: return .leading
         case .topCenter, .middleCenter, .bottomCenter: return .center
@@ -361,7 +382,7 @@ enum SpeechToTextCaptionAlignment: String, CaseIterable, Identifiable {
         }
     }
 
-    var frameAlignment: Alignment {
+    public var frameAlignment: Alignment {
         switch self {
         case .topLeft, .middleLeft, .bottomLeft: return .leading
         case .topCenter, .middleCenter, .bottomCenter: return .center
@@ -370,20 +391,20 @@ enum SpeechToTextCaptionAlignment: String, CaseIterable, Identifiable {
     }
 }
 
-struct SpeechToTextColor: Codable, Equatable {
-    var red: Double
-    var green: Double
-    var blue: Double
-    var alpha: Double
+public struct SpeechToTextColor: Codable, Equatable, Sendable {
+    public var red: Double
+    public var green: Double
+    public var blue: Double
+    public var alpha: Double
 
-    init(red: Double, green: Double, blue: Double, alpha: Double) {
+    public init(red: Double, green: Double, blue: Double, alpha: Double) {
         self.red = red
         self.green = green
         self.blue = blue
         self.alpha = alpha
     }
 
-    init(nsColor: NSColor) {
+    public init(nsColor: NSColor) {
         let color = nsColor.usingColorSpace(.sRGB) ?? nsColor.usingColorSpace(.deviceRGB) ?? nsColor
         red = Double(color.redComponent)
         green = Double(color.greenComponent)
@@ -391,11 +412,11 @@ struct SpeechToTextColor: Codable, Equatable {
         alpha = Double(color.alphaComponent)
     }
 
-    init(color: Color) {
+    public init(color: Color) {
         self.init(nsColor: NSColor(color))
     }
 
-    var nsColor: NSColor {
+    public var nsColor: NSColor {
         NSColor(
             srgbRed: max(0, min(1, red)),
             green: max(0, min(1, green)),
@@ -404,25 +425,45 @@ struct SpeechToTextColor: Codable, Equatable {
         )
     }
 
-    var swiftUIColor: Color {
+    public var swiftUIColor: Color {
         Color(nsColor: nsColor)
     }
 
-    static let white = SpeechToTextColor(red: 1, green: 1, blue: 1, alpha: 1)
-    static let translucentBlack = SpeechToTextColor(red: 0, green: 0, blue: 0, alpha: 0.72)
+    public static let white = SpeechToTextColor(red: 1, green: 1, blue: 1, alpha: 1)
+    public static let translucentBlack = SpeechToTextColor(red: 0, green: 0, blue: 0, alpha: 0.72)
 }
 
-struct SpeechToTextCaptionRenderConfiguration: Equatable {
-    var font: SpeechToTextCaptionFont
-    var fontSize: Double
-    var fontColor: SpeechToTextColor
-    var backgroundColor: SpeechToTextColor
-    var width: SpeechToTextCaptionWidth
-    var padding: Double
-    var alignment: SpeechToTextCaptionAlignment
-    var isAffectedByNTSC: Bool
+public struct SpeechToTextCaptionRenderConfiguration: Equatable, Sendable {
+    public var font: SpeechToTextCaptionFont
+    public var fontSize: Double
+    public var fontColor: SpeechToTextColor
+    public var backgroundColor: SpeechToTextColor
+    public var width: SpeechToTextCaptionWidth
+    public var padding: Double
+    public var alignment: SpeechToTextCaptionAlignment
+    public var isAffectedByNTSC: Bool
 
-    static let defaultValue = SpeechToTextCaptionRenderConfiguration(
+    public init(
+        font: SpeechToTextCaptionFont,
+        fontSize: Double,
+        fontColor: SpeechToTextColor,
+        backgroundColor: SpeechToTextColor,
+        width: SpeechToTextCaptionWidth,
+        padding: Double,
+        alignment: SpeechToTextCaptionAlignment,
+        isAffectedByNTSC: Bool
+    ) {
+        self.font = font
+        self.fontSize = fontSize
+        self.fontColor = fontColor
+        self.backgroundColor = backgroundColor
+        self.width = width
+        self.padding = padding
+        self.alignment = alignment
+        self.isAffectedByNTSC = isAffectedByNTSC
+    }
+
+    public static let defaultValue = SpeechToTextCaptionRenderConfiguration(
         font: .system,
         fontSize: 30,
         fontColor: .white,
@@ -435,71 +476,71 @@ struct SpeechToTextCaptionRenderConfiguration: Equatable {
 }
 
 @MainActor
-final class SpeechToTextConfiguration: ObservableObject {
-    @Published private(set) var availableModels = SpeechToTextModelDescriptor.builtIn
+public final class SpeechToTextConfiguration: ObservableObject {
+    @Published public private(set) var availableModels = SpeechToTextModelDescriptor.builtIn
 
-    @Published var isSpeechToTextEnabled: Bool {
+    @Published public var isSpeechToTextEnabled: Bool {
         didSet { defaults.set(isSpeechToTextEnabled, forKey: Key.enabled) }
     }
 
-    @Published var selectedModelID: String {
+    @Published public var selectedModelID: String {
         didSet { defaults.set(selectedModelID, forKey: Key.selectedModelID) }
     }
 
-    @Published var isStreamingEnabled: Bool {
+    @Published public var isStreamingEnabled: Bool {
         didSet {
             defaults.set(isStreamingEnabled, forKey: Key.streamingEnabled)
             reconcileSelection()
         }
     }
 
-    @Published var selectedQuantization: String {
+    @Published public var selectedQuantization: String {
         didSet {
             defaults.set(selectedQuantization, forKey: Key.selectedQuantization)
             reconcileSelection()
         }
     }
 
-    @Published var selectedMicrophoneID: String {
+    @Published public var selectedMicrophoneID: String {
         didSet { defaults.set(selectedMicrophoneID, forKey: Key.selectedMicrophoneID) }
     }
 
-    @Published var captionFont: SpeechToTextCaptionFont {
+    @Published public var captionFont: SpeechToTextCaptionFont {
         didSet { defaults.set(captionFont.rawValue, forKey: Key.captionFont) }
     }
 
-    @Published var captionFontSize: Double {
+    @Published public var captionFontSize: Double {
         didSet { defaults.set(Self.clampedFontSize(captionFontSize), forKey: Key.captionFontSize) }
     }
 
-    @Published var captionFontColor: SpeechToTextColor {
+    @Published public var captionFontColor: SpeechToTextColor {
         didSet { saveColor(captionFontColor, forKey: Key.captionFontColor) }
     }
 
-    @Published var captionBackgroundColor: SpeechToTextColor {
+    @Published public var captionBackgroundColor: SpeechToTextColor {
         didSet { saveColor(captionBackgroundColor, forKey: Key.captionBackgroundColor) }
     }
 
-    @Published var captionWidth: SpeechToTextCaptionWidth {
+    @Published public var captionWidth: SpeechToTextCaptionWidth {
         didSet { defaults.set(captionWidth.rawValue, forKey: Key.captionWidth) }
     }
 
-    @Published var captionPadding: Double {
+    @Published public var captionPadding: Double {
         didSet { defaults.set(Self.clampedPadding(captionPadding), forKey: Key.captionPadding) }
     }
 
-    @Published var captionAlignment: SpeechToTextCaptionAlignment {
+    @Published public var captionAlignment: SpeechToTextCaptionAlignment {
         didSet { defaults.set(captionAlignment.rawValue, forKey: Key.captionAlignment) }
     }
 
-    @Published var areCaptionsAffectedByNTSC: Bool {
+    @Published public var areCaptionsAffectedByNTSC: Bool {
         didSet { defaults.set(areCaptionsAffectedByNTSC, forKey: Key.captionsAffectedByNTSC) }
     }
 
     private let defaults: UserDefaults
     private var isReconcilingSelection = false
 
-    var modeFilteredModels: [SpeechToTextModelDescriptor] {
+    public var modeFilteredModels: [SpeechToTextModelDescriptor] {
         let matchingModels = availableModels.filter { model in
             !isStreamingEnabled || model.isStreamingCapable
         }
@@ -511,26 +552,26 @@ final class SpeechToTextConfiguration: ObservableObject {
         return matchingModels
     }
 
-    var availableQuantizations: [String] {
+    public var availableQuantizations: [String] {
         Self.quantizations(in: modeFilteredModels)
     }
 
-    var filteredModels: [SpeechToTextModelDescriptor] {
+    public var filteredModels: [SpeechToTextModelDescriptor] {
         modeFilteredModels.filter { $0.quantization == selectedQuantization }
     }
 
-    var selectedModel: SpeechToTextModelDescriptor {
+    public var selectedModel: SpeechToTextModelDescriptor {
         filteredModels.first { $0.id == selectedModelID }
             ?? filteredModels.first
             ?? modeFilteredModels.first
             ?? SpeechToTextModelDescriptor.descriptor(for: selectedModelID, in: availableModels)
     }
 
-    var selectedModelLocalURL: URL {
+    public var selectedModelLocalURL: URL {
         Self.localModelURL(for: selectedModel)
     }
 
-    var captionRenderConfiguration: SpeechToTextCaptionRenderConfiguration {
+    public var captionRenderConfiguration: SpeechToTextCaptionRenderConfiguration {
         SpeechToTextCaptionRenderConfiguration(
             font: captionFont,
             fontSize: captionFontSize,
@@ -543,7 +584,7 @@ final class SpeechToTextConfiguration: ObservableObject {
         )
     }
 
-    var backendStatusText: String {
+    public var backendStatusText: String {
         #if canImport(TranscribeCpp)
         return "TranscribeCpp is linked. The selected GGUF path is ready."
         #elseif canImport(CTranscribe)
@@ -553,7 +594,7 @@ final class SpeechToTextConfiguration: ObservableObject {
         #endif
     }
 
-    init(defaults: UserDefaults = .standard) {
+    public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         isSpeechToTextEnabled = defaults.object(forKey: Key.enabled) as? Bool ?? false
 
@@ -585,19 +626,19 @@ final class SpeechToTextConfiguration: ObservableObject {
         reconcileSelection()
     }
 
-    func replaceAvailableModels(_ models: [SpeechToTextModelDescriptor]) {
+    public func replaceAvailableModels(_ models: [SpeechToTextModelDescriptor]) {
         let nextModels = models.isEmpty ? SpeechToTextModelDescriptor.builtIn : models
         availableModels = nextModels
         reconcileSelection()
     }
 
-    func localModelPathForBackend() -> String? {
+    public func localModelPathForBackend() -> String? {
         let url = selectedModelLocalURL
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         return url.path
     }
 
-    nonisolated static func modelsDirectory() -> URL {
+    public nonisolated static func modelsDirectory() -> URL {
         let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
 
@@ -606,11 +647,11 @@ final class SpeechToTextConfiguration: ObservableObject {
             .appendingPathComponent("SpeechModels", isDirectory: true)
     }
 
-    nonisolated static func localModelURL(for model: SpeechToTextModelDescriptor) -> URL {
+    public nonisolated static func localModelURL(for model: SpeechToTextModelDescriptor) -> URL {
         modelsDirectory().appendingPathComponent(model.localFilename, isDirectory: false)
     }
 
-    nonisolated static func isModelDownloaded(_ model: SpeechToTextModelDescriptor) -> Bool {
+    public nonisolated static func isModelDownloaded(_ model: SpeechToTextModelDescriptor) -> Bool {
         let url = localModelURL(for: model)
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attributes[.size] as? NSNumber else {
@@ -694,18 +735,20 @@ final class SpeechToTextConfiguration: ObservableObject {
 }
 
 @MainActor
-final class SpeechToTextModelCatalog: ObservableObject {
-    @Published private(set) var isRefreshing = false
-    @Published private(set) var statusText = "Using bundled model catalog."
+public final class SpeechToTextModelCatalog: ObservableObject {
+    @Published public private(set) var isRefreshing = false
+    @Published public private(set) var statusText = "Using bundled model catalog."
 
     private var hasLoadedRemoteCatalog = false
 
-    func refreshIfNeeded(configuration: SpeechToTextConfiguration) {
+    public init() {}
+
+    public func refreshIfNeeded(configuration: SpeechToTextConfiguration) {
         guard !hasLoadedRemoteCatalog else { return }
         refresh(configuration: configuration)
     }
 
-    func refresh(configuration: SpeechToTextConfiguration) {
+    public func refresh(configuration: SpeechToTextConfiguration) {
         guard !isRefreshing else { return }
 
         isRefreshing = true
@@ -875,11 +918,11 @@ final class SpeechToTextModelCatalog: ObservableObject {
     }
 }
 
-final class SpeechToTextMicrophoneMonitor: NSObject, ObservableObject, AVCaptureAudioDataOutputSampleBufferDelegate {
-    @Published private(set) var microphones: [SpeechToTextMicrophoneDescriptor] = []
-    @Published private(set) var inputLevel: Double = 0
-    @Published private(set) var isMonitoring = false
-    @Published private(set) var statusText = "Select a microphone to test live input."
+public final class SpeechToTextMicrophoneMonitor: NSObject, ObservableObject, AVCaptureAudioDataOutputSampleBufferDelegate {
+    @Published public private(set) var microphones: [SpeechToTextMicrophoneDescriptor] = []
+    @Published public private(set) var inputLevel: Double = 0
+    @Published public private(set) var isMonitoring = false
+    @Published public private(set) var statusText = "Select a microphone to test live input."
 
     private let session = AVCaptureSession()
     private let output = AVCaptureAudioDataOutput()
@@ -888,7 +931,7 @@ final class SpeechToTextMicrophoneMonitor: NSObject, ObservableObject, AVCapture
     private var activeDeviceID = ""
     private var lastLevelPublishTime = Date.distantPast.timeIntervalSinceReferenceDate
 
-    override init() {
+    public override init() {
         super.init()
         output.audioSettings = [
             AVFormatIDKey: kAudioFormatLinearPCM,
@@ -900,7 +943,7 @@ final class SpeechToTextMicrophoneMonitor: NSObject, ObservableObject, AVCapture
         refreshDevices()
     }
 
-    func refreshDevices() {
+    public func refreshDevices() {
         let discoveredMicrophones = Self.discoverMicrophones()
         DispatchQueue.main.async {
             self.microphones = discoveredMicrophones
@@ -910,7 +953,7 @@ final class SpeechToTextMicrophoneMonitor: NSObject, ObservableObject, AVCapture
         }
     }
 
-    func startMonitoring(deviceID: String) {
+    public func startMonitoring(deviceID: String) {
         activeDeviceID = deviceID
         refreshDevices()
 
@@ -946,7 +989,7 @@ final class SpeechToTextMicrophoneMonitor: NSObject, ObservableObject, AVCapture
         }
     }
 
-    func stopMonitoring() {
+    public func stopMonitoring() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             if self.session.isRunning {
@@ -960,7 +1003,7 @@ final class SpeechToTextMicrophoneMonitor: NSObject, ObservableObject, AVCapture
         }
     }
 
-    func captureOutput(
+    public func captureOutput(
         _ output: AVCaptureOutput,
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
@@ -1171,23 +1214,25 @@ final class SpeechToTextMicrophoneMonitor: NSObject, ObservableObject, AVCapture
 }
 
 @MainActor
-final class SpeechToTextModelDownloader: ObservableObject {
-    @Published private(set) var activeModelID: String?
-    @Published private(set) var progress: Double = 0
-    @Published private(set) var statusText = "Models are saved in Application Support."
+public final class SpeechToTextModelDownloader: ObservableObject {
+    @Published public private(set) var activeModelID: String?
+    @Published public private(set) var progress: Double = 0
+    @Published public private(set) var statusText = "Models are saved in Application Support."
 
     private var downloadTask: URLSessionDownloadTask?
     private var progressObservation: NSKeyValueObservation?
 
-    var isDownloading: Bool {
+    public init() {}
+
+    public var isDownloading: Bool {
         activeModelID != nil
     }
 
-    func isModelDownloaded(_ model: SpeechToTextModelDescriptor) -> Bool {
+    public func isModelDownloaded(_ model: SpeechToTextModelDescriptor) -> Bool {
         SpeechToTextConfiguration.isModelDownloaded(model)
     }
 
-    func download(_ model: SpeechToTextModelDescriptor) {
+    public func download(_ model: SpeechToTextModelDescriptor) {
         if isModelDownloaded(model) {
             statusText = "\(model.title) is already downloaded."
             return
@@ -1223,7 +1268,7 @@ final class SpeechToTextModelDownloader: ObservableObject {
         task.resume()
     }
 
-    func deleteDownloadedModel(_ model: SpeechToTextModelDescriptor) {
+    public func deleteDownloadedModel(_ model: SpeechToTextModelDescriptor) {
         do {
             try FileManager.default.removeItem(at: SpeechToTextConfiguration.localModelURL(for: model))
             statusText = "Removed \(model.title)."
@@ -1234,7 +1279,7 @@ final class SpeechToTextModelDownloader: ObservableObject {
         }
     }
 
-    func revealDownloadedModel(_ model: SpeechToTextModelDescriptor) {
+    public func revealDownloadedModel(_ model: SpeechToTextModelDescriptor) {
         let url = SpeechToTextConfiguration.localModelURL(for: model)
         guard FileManager.default.fileExists(atPath: url.path) else {
             statusText = "\(model.title) is not downloaded."
@@ -1244,7 +1289,7 @@ final class SpeechToTextModelDownloader: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
-    func cancel() {
+    public func cancel() {
         downloadTask?.cancel()
         downloadTask = nil
         progressObservation = nil

@@ -3,27 +3,19 @@
 import PackageDescription
 
 let package = Package(
-    name: "EmynPerformance",
-    platforms: [.macOS(.v13)],
-    products: [
-        .library(
-            name: "EmynPerformanceCore",
-            targets: ["EmynPerformanceCore"]
-        )
+    name: "EmynWorkspace",
+    platforms: [.macOS(.v14)],
+    dependencies: [
+        .package(path: "Packages/VideoCompositionKit"),
+        .package(path: "Packages/WindowCaptureKit")
     ],
     targets: [
-        .target(
-            name: "EmynPerformanceCore",
-            path: "Emyn/PerformanceCore",
-            sources: [
-                "LatestFrameRenderGate.swift",
-                "NtscEffectFrameSizer.swift",
-                "WindowBackgroundCaptureSizer.swift"
-            ]
-        ),
         .testTarget(
             name: "EmynPerformanceTests",
-            dependencies: ["EmynPerformanceCore"],
+            dependencies: [
+                "VideoCompositionKit",
+                "WindowCaptureKit"
+            ],
             path: "EmynPerformanceTests"
         )
     ]

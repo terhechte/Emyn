@@ -3,9 +3,8 @@ import ApplicationServices
 import Combine
 import Darwin
 import PlatformMacOSKit
-import ScreenCaptureKit
 
-enum WindowControlKeyPress {
+public enum WindowControlKeyPress {
     case leftArrow
     case rightArrow
     case space
@@ -20,29 +19,26 @@ enum WindowControlKeyPress {
 }
 
 @MainActor
-final class WindowControlCoordinator: ObservableObject {
-    @Published private(set) var isActive = false
-    @Published private(set) var statusText = "Window control inactive"
-    @Published private(set) var cursorNormalised: CGPoint?
-    @Published private(set) var cursorRegionNormalised = CGRect(x: 0, y: 0, width: 1, height: 1)
+public final class WindowControlCoordinator: ObservableObject {
+    @Published public private(set) var isActive = false
+    @Published public private(set) var statusText = "Window control inactive"
+    @Published public private(set) var cursorNormalised: CGPoint?
+    @Published public private(set) var cursorRegionNormalised = CGRect(x: 0, y: 0, width: 1, height: 1)
 
     private var session: WindowCaptureSession?
     private var secureInputPollTask: Task<Void, Never>?
-    private static var outputSize: CGSize {
-        CGSize(
-            width: SharedFrameConfiguration.outputFrameSize.width,
-            height: SharedFrameConfiguration.outputFrameSize.height
-        )
-    }
     private static let secureKeyboardEntryMessage =
         "keyboard forwarding unavailable: another app has Secure Keyboard Entry enabled " +
         "(e.g. a password field, 1Password, or a terminal's Secure Keyboard Entry)"
 
-    func activate(
+    public init() {}
+
+    public func activate(
         option: WindowBackgroundOption,
         mappedTo view: NSView?,
         fit: BackgroundMediaFit,
         alignment: BackgroundContentAlignment,
+        outputSize: CGSize,
         excludeFunctionKeys: Bool
     ) {
         guard !isActive else { return }
@@ -72,11 +68,12 @@ final class WindowControlCoordinator: ObservableObject {
             return
         }
 
-        guard let mapping = Self.controlMapping(
+        guard let mapping = WindowPointerMapper.mapping(
             for: windowBounds,
             fit: fit,
             alignment: alignment,
-            in: view
+            outputSize: outputSize,
+            viewBounds: view.bounds
         ),
               let viewBounds = Self.cgScreenRect(for: mapping.viewRect, in: view),
               let cursorRegion = Self.normalisedCGRect(for: mapping.viewRect, in: view) else {
@@ -117,7 +114,7 @@ final class WindowControlCoordinator: ObservableObject {
         startSecureInputPolling(appName: option.appName)
     }
 
-    func deactivate() {
+    public func deactivate() {
         guard let session else {
             finishDeactivation(status: "Window control inactive")
             return
@@ -127,11 +124,11 @@ final class WindowControlCoordinator: ObservableObject {
         finishDeactivation(status: "Window control inactive")
     }
 
-    func setExcludeFunctionKeys(_ exclude: Bool) {
+    public func setExcludeFunctionKeys(_ exclude: Bool) {
         session?.excludeFunctionKeys = exclude
     }
 
-    func pressKey(_ key: WindowControlKeyPress) {
+    public func pressKey(_ key: WindowControlKeyPress) {
         guard isActive, let session else { return }
 
         do {
@@ -206,168 +203,6 @@ final class WindowControlCoordinator: ObservableObject {
             y: (rect.minY - viewRect.minY) / viewRect.height,
             width: rect.width / viewRect.width,
             height: rect.height / viewRect.height
-        )
-    }
-
-    private static func videoOutputRect(in view: NSView) -> CGRect {
-        aspectFitRect(contentSize: outputSize, in: view.bounds)
-    }
-
-    private struct ControlMapping {
-        var viewRect: CGRect
-        var targetRect: CGRect
-    }
-
-    private static func controlMapping(
-        for windowBounds: CGRect,
-        fit: BackgroundMediaFit,
-        alignment: BackgroundContentAlignment,
-        in view: NSView
-    ) -> ControlMapping? {
-        guard windowBounds.width > 0,
-              windowBounds.height > 0,
-              outputSize.width > 0,
-              outputSize.height > 0 else {
-            return nil
-        }
-
-        let outputExtent = CGRect(origin: .zero, size: outputSize)
-        let fittedRect = fittedContentRect(
-            contentSize: windowBounds.size,
-            fit: fit,
-            alignment: alignment,
-            outputExtent: outputExtent
-        )
-
-        let outputControlRect: CGRect
-        let targetRect: CGRect
-        switch fit {
-        case .fill:
-            outputControlRect = outputExtent
-            targetRect = visibleTargetRect(
-                for: windowBounds,
-                fittedRect: fittedRect,
-                outputExtent: outputExtent
-            )
-        case .contain:
-            outputControlRect = fittedRect.intersection(outputExtent)
-            targetRect = windowBounds
-        case .scale:
-            outputControlRect = outputExtent
-            targetRect = windowBounds
-        }
-
-        guard !outputControlRect.isNull,
-              outputControlRect.width > 0,
-              outputControlRect.height > 0,
-              targetRect.width > 0,
-              targetRect.height > 0 else {
-            return nil
-        }
-
-        return ControlMapping(
-            viewRect: viewRect(forOutputRect: outputControlRect, in: view),
-            targetRect: targetRect
-        )
-    }
-
-    private static func fittedContentRect(
-        contentSize: CGSize,
-        fit: BackgroundMediaFit,
-        alignment: BackgroundContentAlignment,
-        outputExtent: CGRect
-    ) -> CGRect {
-        let scaleX: CGFloat
-        let scaleY: CGFloat
-        switch fit {
-        case .fill:
-            let scale = max(outputExtent.width / contentSize.width, outputExtent.height / contentSize.height)
-            scaleX = scale
-            scaleY = scale
-        case .contain:
-            let scale = min(outputExtent.width / contentSize.width, outputExtent.height / contentSize.height)
-            scaleX = scale
-            scaleY = scale
-        case .scale:
-            scaleX = outputExtent.width / contentSize.width
-            scaleY = outputExtent.height / contentSize.height
-        }
-
-        let scaledSize = CGSize(
-            width: contentSize.width * scaleX,
-            height: contentSize.height * scaleY
-        )
-        return CGRect(
-            origin: alignment.origin(for: scaledSize, in: outputExtent),
-            size: scaledSize
-        )
-    }
-
-    private static func visibleTargetRect(
-        for windowBounds: CGRect,
-        fittedRect: CGRect,
-        outputExtent: CGRect
-    ) -> CGRect {
-        let visibleOutputRect = fittedRect.intersection(outputExtent)
-        guard !visibleOutputRect.isNull,
-              fittedRect.width > 0,
-              fittedRect.height > 0 else {
-            return windowBounds
-        }
-
-        let scaleX = fittedRect.width / windowBounds.width
-        let scaleY = fittedRect.height / windowBounds.height
-        guard scaleX > 0, scaleY > 0 else {
-            return windowBounds
-        }
-
-        let visibleMinX = max(0, (visibleOutputRect.minX - fittedRect.minX) / scaleX)
-        let visibleMaxX = min(windowBounds.width, (visibleOutputRect.maxX - fittedRect.minX) / scaleX)
-        let visibleMinYFromBottom = max(0, (visibleOutputRect.minY - fittedRect.minY) / scaleY)
-        let visibleMaxYFromBottom = min(windowBounds.height, (visibleOutputRect.maxY - fittedRect.minY) / scaleY)
-
-        let visibleWidth = max(0, visibleMaxX - visibleMinX)
-        let visibleHeight = max(0, visibleMaxYFromBottom - visibleMinYFromBottom)
-        guard visibleWidth > 0, visibleHeight > 0 else {
-            return windowBounds
-        }
-
-        return CGRect(
-            x: windowBounds.minX + visibleMinX,
-            y: windowBounds.minY + windowBounds.height - visibleMaxYFromBottom,
-            width: visibleWidth,
-            height: visibleHeight
-        )
-    }
-
-    private static func viewRect(forOutputRect outputRect: CGRect, in view: NSView) -> CGRect {
-        let videoRect = videoOutputRect(in: view)
-        let scaleX = videoRect.width / outputSize.width
-        let scaleY = videoRect.height / outputSize.height
-
-        return CGRect(
-            x: videoRect.minX + outputRect.minX * scaleX,
-            y: videoRect.minY + outputRect.minY * scaleY,
-            width: outputRect.width * scaleX,
-            height: outputRect.height * scaleY
-        )
-    }
-
-    private static func aspectFitRect(contentSize: CGSize, in container: CGRect) -> CGRect {
-        guard contentSize.width > 0,
-              contentSize.height > 0,
-              container.width > 0,
-              container.height > 0 else {
-            return container
-        }
-
-        let scale = min(container.width / contentSize.width, container.height / contentSize.height)
-        let size = CGSize(width: contentSize.width * scale, height: contentSize.height * scale)
-        return CGRect(
-            x: container.midX - size.width * 0.5,
-            y: container.midY - size.height * 0.5,
-            width: size.width,
-            height: size.height
         )
     }
 
