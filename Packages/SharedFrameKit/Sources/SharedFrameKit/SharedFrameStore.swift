@@ -369,6 +369,18 @@ public final class SharedFrameReader {
         mappedFile = try SharedFrameMappedFile(createIfNeeded: false)
     }
 
+    /// Returns the sequence number of the latest completely published frame without
+    /// copying any pixels, or `nil` when no frame is available yet or the writer is
+    /// mid-publish. Cheap enough to poll every output tick.
+    public func latestSequence() -> UInt64? {
+        let sequence = readUInt64(at: Offset.sequence)
+        guard sequence > 0, sequence.isMultiple(of: 2) else {
+            return nil
+        }
+
+        return sequence
+    }
+
     public func copyLatestFrame(to pixelBuffer: CVPixelBuffer) -> SharedFrameSnapshot? {
         guard CVPixelBufferGetPixelFormatType(pixelBuffer) == SharedFrameConfiguration.pixelFormat else {
             return nil

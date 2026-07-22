@@ -192,6 +192,12 @@ private struct ProcessingSettings {
     var speechCaptionConfiguration = CaptionRenderConfiguration.defaultValue
 }
 
+private struct SpeechCaptionOverlayCacheKey: Equatable {
+    var text: String
+    var configuration: CaptionRenderConfiguration
+    var size: CGSize
+}
+
 private struct AnimatedScalar {
     var startValue: Double
     var targetValue: Double
@@ -543,6 +549,7 @@ public final class CameraPipeline: NSObject, ObservableObject {
     private let backgroundLock = NSLock()
     private let backgroundMediaLock = NSLock()
     private let imageOverlayLock = NSLock()
+    private let speechCaptionOverlayLock = NSLock()
     private let renderGate = LatestFrameRenderGate<RenderFrame>()
 
     private let ciContext: CIContext
@@ -571,6 +578,8 @@ public final class CameraPipeline: NSObject, ObservableObject {
     private var confettiOverlayPixelBufferPoolSize = CGSize(width: 0, height: 0)
     private var speechCaptionOverlayPixelBufferPool: CVPixelBufferPool?
     private var speechCaptionOverlayPixelBufferPoolSize = CGSize(width: 0, height: 0)
+    private var speechCaptionOverlayCache: CGImage?
+    private var speechCaptionOverlayCacheKey: SpeechCaptionOverlayCacheKey?
     private var outputFormatDescription: CMFormatDescription?
     private var outputFormatDescriptionSize = CGSize(width: 0, height: 0)
     private var frameCounter: UInt64 = 0
@@ -929,6 +938,7 @@ public final class CameraPipeline: NSObject, ObservableObject {
                     requestedInputQuality,
                     to: self.captureSession
                 )
+                self.pinCameraFrameRate(30, on: device)
                 self.videoOutput.alwaysDiscardsLateVideoFrames = true
                 self.videoOutput.videoSettings = [
                     kCVPixelBufferPixelFormatTypeKey as String: SharedFrameConfiguration.pixelFormat
@@ -961,6 +971,24 @@ public final class CameraPipeline: NSObject, ObservableObject {
                 self.captureSession.commitConfiguration()
                 self.setStatus(error.localizedDescription)
             }
+        }
+    }
+
+    private func pinCameraFrameRate(_ frameRate: Int32, on device: AVCaptureDevice) {
+        let frameDuration = CMTime(value: 1, timescale: frameRate)
+        let supportsFrameRate = device.activeFormat.videoSupportedFrameRateRanges.contains { range in
+            CMTimeCompare(range.minFrameDuration, frameDuration) <= 0
+                && CMTimeCompare(frameDuration, range.maxFrameDuration) >= 0
+        }
+        guard supportsFrameRate else { return }
+
+        do {
+            try device.lockForConfiguration()
+            device.activeVideoMinFrameDuration = frameDuration
+            device.activeVideoMaxFrameDuration = frameDuration
+            device.unlockForConfiguration()
+        } catch {
+            setStatus("Camera frame rate configuration failed: \(error.localizedDescription)")
         }
     }
 
@@ -1610,21 +1638,50 @@ public final class CameraPipeline: NSObject, ObservableObject {
         outputExtent: CGRect,
         settings: ProcessingSettings
     ) -> CIImage {
-        guard let overlay = renderSpeechCaptionOverlay(settings: settings, outputExtent: outputExtent) else {
+        guard let overlay = cachedSpeechCaptionOverlayImage(settings: settings, size: outputExtent.size) else {
             return image.cropped(to: outputExtent)
         }
 
-        return overlay
+        return CIImage(cgImage: overlay)
             .composited(over: image.cropped(to: outputExtent))
             .cropped(to: outputExtent)
     }
 
-    private func renderSpeechCaptionOverlay(
+    private func cachedSpeechCaptionOverlayImage(
         settings: ProcessingSettings,
-        outputExtent: CGRect
-    ) -> CIImage? {
+        size: CGSize
+    ) -> CGImage? {
+        let key = SpeechCaptionOverlayCacheKey(
+            text: settings.speechCaptionText ?? "",
+            configuration: settings.speechCaptionConfiguration,
+            size: size
+        )
+
+        speechCaptionOverlayLock.lock()
+        if let image = speechCaptionOverlayCache, speechCaptionOverlayCacheKey == key {
+            speechCaptionOverlayLock.unlock()
+            return image
+        }
+        speechCaptionOverlayLock.unlock()
+
+        guard let image = renderSpeechCaptionOverlayImage(settings: settings, size: size) else {
+            return nil
+        }
+
+        speechCaptionOverlayLock.lock()
+        speechCaptionOverlayCache = image
+        speechCaptionOverlayCacheKey = key
+        speechCaptionOverlayLock.unlock()
+
+        return image
+    }
+
+    private func renderSpeechCaptionOverlayImage(
+        settings: ProcessingSettings,
+        size: CGSize
+    ) -> CGImage? {
         guard hasSpeechCaption(settings),
-              let pixelBuffer = makeSpeechCaptionOverlayPixelBuffer(size: outputExtent.size),
+              let pixelBuffer = makeSpeechCaptionOverlayPixelBuffer(size: size),
               CVPixelBufferLockBaseAddress(pixelBuffer, []) == kCVReturnSuccess else {
             return nil
         }
@@ -1651,7 +1708,8 @@ public final class CameraPipeline: NSObject, ObservableObject {
             return nil
         }
 
-        context.clear(CGRect(x: 0, y: 0, width: width, height: height))
+        let outputExtent = CGRect(x: 0, y: 0, width: width, height: height)
+        context.clear(outputExtent)
 
         drawSpeechCaption(
             settings.speechCaptionText ?? "",
@@ -1660,16 +1718,14 @@ public final class CameraPipeline: NSObject, ObservableObject {
             outputExtent: outputExtent
         )
 
-        return CIImage(cvPixelBuffer: pixelBuffer).cropped(to: outputExtent)
+        return context.makeImage()
     }
 
     private func drawSpeechCaption(
         _ text: String,
         configuration: CaptionRenderConfiguration,
         in context: CGContext,
-        outputExtent: CGRect,
-        flipHorizontal: Bool = false,
-        flipVertical: Bool = false
+        outputExtent: CGRect
     ) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
@@ -1736,20 +1792,6 @@ public final class CameraPipeline: NSObject, ObservableObject {
         )
         let textRect = backgroundRect.insetBy(dx: padding, dy: padding)
 
-        context.saveGState()
-        defer { context.restoreGState() }
-
-        if flipHorizontal || flipVertical {
-            context.translateBy(
-                x: flipHorizontal ? outputWidth : 0,
-                y: flipVertical ? outputHeight : 0
-            )
-            context.scaleBy(
-                x: flipHorizontal ? -1 : 1,
-                y: flipVertical ? -1 : 1
-            )
-        }
-
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
 
@@ -1793,14 +1835,25 @@ public final class CameraPipeline: NSObject, ObservableObject {
             return
         }
 
-        drawSpeechCaption(
-            settings.speechCaptionText ?? "",
-            configuration: settings.speechCaptionConfiguration,
-            in: context,
-            outputExtent: outputExtent,
-            flipHorizontal: settings.outputFlipHorizontal,
-            flipVertical: settings.outputFlipVertical
-        )
+        guard let overlay = cachedSpeechCaptionOverlayImage(settings: settings, size: outputExtent.size) else {
+            return
+        }
+
+        context.saveGState()
+        defer { context.restoreGState() }
+
+        if settings.outputFlipHorizontal || settings.outputFlipVertical {
+            context.translateBy(
+                x: settings.outputFlipHorizontal ? outputExtent.width : 0,
+                y: settings.outputFlipVertical ? outputExtent.height : 0
+            )
+            context.scaleBy(
+                x: settings.outputFlipHorizontal ? -1 : 1,
+                y: settings.outputFlipVertical ? -1 : 1
+            )
+        }
+
+        context.draw(overlay, in: outputExtent)
     }
 
     private func hasSpeechCaption(_ settings: ProcessingSettings) -> Bool {
@@ -2244,6 +2297,10 @@ public final class CameraPipeline: NSObject, ObservableObject {
         confettiOverlayPixelBufferPoolSize = .zero
         speechCaptionOverlayPixelBufferPool = nil
         speechCaptionOverlayPixelBufferPoolSize = .zero
+        speechCaptionOverlayLock.lock()
+        speechCaptionOverlayCache = nil
+        speechCaptionOverlayCacheKey = nil
+        speechCaptionOverlayLock.unlock()
     }
 
     private func updateOutputFormatDescription(size: CGSize) {

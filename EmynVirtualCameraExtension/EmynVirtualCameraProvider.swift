@@ -31,8 +31,12 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
     private let bufferAuxAttributes: NSDictionary = [kCVPixelBufferPoolAllocationThresholdKey: 6]
     private var frameReader: SharedFrameReader?
     private var lastGoodPixelBuffer: CVPixelBuffer?
+    private var lastSentSequence: UInt64?
     private var fallbackPhase = 0
     private var outputFrameSize = SharedFrameConfiguration.outputFrameSize
+    private var outputFrameSizeCheckTime: CFAbsoluteTime = 0
+    private var outputAnchorNanoseconds: UInt64?
+    private var sentFrameCount: UInt64 = 0
 
     init(localizedName: String) {
         super.init()
@@ -107,6 +111,7 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
         streamingCounter = 0
         timer?.cancel()
         timer = nil
+        resetOutputTimeline()
     }
 
     func setOutputFrameSize(_ frameSize: OutputFrameSize) {
@@ -116,37 +121,50 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
 
     private func sendFrame() {
         let changedFormat = applyOutputFrameSizeIfNeeded(
-            SharedFrameConfiguration.outputFrameSize,
+            currentOutputFrameSize(),
             notifyStream: true
         )
-
-        var pixelBuffer: CVPixelBuffer?
-        let allocationStatus = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(
-            kCFAllocatorDefault,
-            bufferPool,
-            bufferAuxAttributes,
-            &pixelBuffer
-        )
-
-        guard allocationStatus == kCVReturnSuccess, let pixelBuffer else {
-            os_log(.error, "Could not allocate virtual camera pixel buffer: %{public}d", allocationStatus)
-            return
-        }
 
         if frameReader == nil {
             frameReader = try? SharedFrameReader()
         }
 
-        if frameReader?.copyLatestFrame(to: pixelBuffer) != nil {
-            lastGoodPixelBuffer = pixelBuffer
-        } else if !copyLastGoodFrame(to: pixelBuffer) {
-            drawFallbackFrame(into: pixelBuffer)
+        let pixelBuffer: CVPixelBuffer
+        let latestSequence = frameReader?.latestSequence()
+        if let latestSequence, latestSequence == lastSentSequence, let lastGoodPixelBuffer {
+            // The newest published frame was already sent; reuse it without
+            // touching shared memory again.
+            pixelBuffer = lastGoodPixelBuffer
+        } else {
+            var pooledBuffer: CVPixelBuffer?
+            let allocationStatus = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(
+                kCFAllocatorDefault,
+                bufferPool,
+                bufferAuxAttributes,
+                &pooledBuffer
+            )
+
+            guard allocationStatus == kCVReturnSuccess, let pooledBuffer else {
+                os_log(.error, "Could not allocate virtual camera pixel buffer: %{public}d", allocationStatus)
+                return
+            }
+
+            if let snapshot = frameReader?.copyLatestFrame(to: pooledBuffer) {
+                lastSentSequence = snapshot.sequence
+                lastGoodPixelBuffer = pooledBuffer
+            } else if !copyLastGoodFrame(to: pooledBuffer) {
+                drawFallbackFrame(into: pooledBuffer)
+            }
+
+            pixelBuffer = pooledBuffer
         }
+
+        let hostTime = nextOutputHostTime()
 
         var sampleBuffer: CMSampleBuffer?
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: 1, timescale: extensionFrameRate),
-            presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()),
+            presentationTimeStamp: CMTime(value: Int64(hostTime), timescale: Int32(NSEC_PER_SEC)),
             decodeTimeStamp: .invalid
         )
 
@@ -166,12 +184,48 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
             return
         }
 
-        let hostTime = UInt64(timing.presentationTimeStamp.seconds * Double(NSEC_PER_SEC))
         streamSource.stream.send(
             sampleBuffer,
             discontinuity: changedFormat ? .unknown : [],
             hostTimeInNanoseconds: hostTime
         )
+    }
+
+    /// The output frame size lives in app-group `UserDefaults`; reading it hits
+    /// cfprefsd, so only re-check it about once per second instead of every tick.
+    private func currentOutputFrameSize() -> OutputFrameSize {
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - outputFrameSizeCheckTime >= 1 else {
+            return outputFrameSize
+        }
+
+        outputFrameSizeCheckTime = now
+        return SharedFrameConfiguration.outputFrameSize
+    }
+
+    /// Deterministic output timeline: anchored to the host clock once, each sent
+    /// frame is placed exactly one frame duration after the previous one so the
+    /// PTS cadence matches the declared constant frame rate.
+    private func nextOutputHostTime() -> UInt64 {
+        let anchor: UInt64
+        if let outputAnchorNanoseconds {
+            anchor = outputAnchorNanoseconds
+        } else {
+            anchor = UInt64(CMClockGetTime(CMClockGetHostTimeClock()).seconds * Double(NSEC_PER_SEC))
+            outputAnchorNanoseconds = anchor
+            sentFrameCount = 0
+        }
+
+        let hostTime = anchor + UInt64(
+            Double(sentFrameCount) * (Double(NSEC_PER_SEC) / Double(extensionFrameRate))
+        )
+        sentFrameCount += 1
+        return hostTime
+    }
+
+    private func resetOutputTimeline() {
+        outputAnchorNanoseconds = nil
+        sentFrameCount = 0
     }
 
     @discardableResult
@@ -191,6 +245,9 @@ final class EmynVirtualCameraDeviceSource: NSObject, CMIOExtensionDeviceSource {
     private func configureVideoOutput(for frameSize: OutputFrameSize) {
         outputFrameSize = frameSize
         fallbackPhase = 0
+        lastGoodPixelBuffer = nil
+        lastSentSequence = nil
+        resetOutputTimeline()
 
         CMVideoFormatDescriptionCreate(
             allocator: kCFAllocatorDefault,
