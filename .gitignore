@@ -6,3 +6,5 @@
 
 # Generated TranscribeCpp binary artifact
 /transcribe-cpp-swift/TranscribeCpp.xcframework/
+
+.build
